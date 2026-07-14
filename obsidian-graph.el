@@ -178,10 +178,11 @@
          (xmax (apply #'max (mapcar #'car values)))
          (ymin (apply #'min (mapcar #'cdr values)))
          (ymax (apply #'max (mapcar #'cdr values)))
-         (margin-x 4) (margin-y 3) occupied result)
+         (margin-x 2) (margin-y 2) occupied result)
     (dolist (node nodes)
       (let* ((p (gethash node positions))
-             (label-width (+ 5 (string-width node)))
+             ;; Obsidian hides the Markdown extension in graph labels.
+             (label-width (+ 2 (string-width node)))
              (usable-x (max 1 (- width label-width (* 2 margin-x))))
              (usable-y (max 1 (- height (* 2 margin-y))))
              (x (+ margin-x
@@ -244,14 +245,14 @@
         (blocked (make-hash-table :test #'equal))
         (connected (obsidian--connected-nodes current edges)))
     (dotimes (row height) (aset grid row (make-vector width ?\s)))
-    ;; A three-row collision halo prevents lines running along label text.
+    ;; Protect only label text.  The marker stays available as an edge anchor,
+    ;; so connections visibly reach ●/◆ instead of stopping several cells away.
     (dolist (node nodes)
       (let* ((p (cdr (assoc node positions))) (x (car p)) (y (cdr p))
-             (label (format "%s %s.md" (if (equal node current) "◆" "●") node)))
-        (cl-loop for yy from (max 0 (1- y)) to (min (1- height) (1+ y)) do
-                 (cl-loop for xx from x to (min (1- width)
-                                                (+ x (string-width label))) do
-                          (puthash (cons xx yy) t blocked)))))
+             (label (format "%s %s" (if (equal node current) "◆" "●") node)))
+        (cl-loop for xx from (+ x 2)
+                 to (min (1- width) (+ x (string-width label))) do
+                 (puthash (cons xx y) t blocked))))
     ;; Edges are the lower layer.  Crossings become a single clear cross.
     (dolist (edge edges)
       (let* ((a (cdr (assoc (car edge) positions)))
@@ -272,7 +273,7 @@
       ;; Labels are always the top layer.
       (dolist (node nodes)
         (let* ((p (cdr (assoc node positions))) (x (car p)) (y (cdr p))
-               (label (format "%s %s.md" (if (equal node current) "◆" "●") node))
+               (label (format "%s %s" (if (equal node current) "◆" "●") node))
                (face (cond ((equal node current) 'obsidian-graph-current)
                            ((member node connected) 'obsidian-graph-connected)
                            ((cl-some (lambda (edge)
@@ -377,9 +378,15 @@
              (view (obsidian--graph-viewport-size))
              ;; Roughly two viewports: enough whitespace to remove crowding,
              ;; while keeping a useful neighborhood visible on first open.
-             (width (max 80 (* 2 (car view)) (* 10 (max 1 (length nodes)))))
-             (height (max 32 (/ (* 3 (cdr view)) 2)
-                          (* 4 (max 1 (length nodes)))))
+             (compact (<= (length nodes) 12))
+             ;; Normal vault folders fit completely in the visible panel.
+             ;; Only genuinely large graphs receive a pannable canvas.
+             (width (if compact
+                        (car view)
+                      (max (car view) (* 7 (length nodes)))))
+             (height (if compact
+                         (cdr view)
+                       (max (cdr view) (* 3 (length nodes)))))
              (current (and obsidian--current-file
                            (file-name-base obsidian--current-file))))
         (setq obsidian--graph-points nil)

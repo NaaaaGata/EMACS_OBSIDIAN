@@ -48,7 +48,7 @@
          (positions '(("music"  . (1 . 1)) ("piano" . (20 . 5))))
          (obsidian--graph-points nil)
          (text (obsidian--render-graph nodes edges positions 40 8 "music"))
-         (at (string-match "music.md" text)))
+         (at (string-match "music" text)))
     (should at)
     (should (equal "music" (get-text-property at 'obsidian-node text)))))
 
@@ -72,7 +72,7 @@
          (positions (obsidian--force-layout nodes edges 80 22))
          (text (obsidian--render-graph nodes edges positions 80 22 "music")))
     (dolist (node nodes)
-      (should (string-match-p (regexp-quote (format "%s.md" node)) text)))))
+      (should (string-match-p (regexp-quote node) text)))))
 
 (ert-deftest obsidian-arrow-pan-moves-camera-not-point ()
   (with-temp-buffer
