@@ -9,9 +9,13 @@
 
 (defvar obsidian--vault)
 (defvar obsidian--current-scope)
+(defvar obsidian--current-file)
 (defvar obsidian-tree-buffer-name)
+(defvar obsidian-delete-by-moving-to-trash)
 (declare-function obsidian--open-note "obsidian-editor")
 (declare-function obsidian--schedule-graph-update "obsidian-graph")
+(declare-function obsidian--editor-window "obsidian-windows")
+(declare-function obsidian--empty-editor-buffer "obsidian-windows")
 
 (defcustom obsidian-file-extension "md"
   "File extension for notes."
@@ -172,6 +176,41 @@ backup files such as `NAME~' are deliberately excluded."
         (unless (get-text-property (point) 'obsidian-path)
           (when (> (point) (line-beginning-position)) (backward-char 1)))
         (obsidian--tree-open)))))
+
+(defun obsidian--tree-delete-file ()
+  "Confirm and delete the note at point, then refresh the workspace.
+When `obsidian-delete-by-moving-to-trash' is non-nil, move the note to the
+operating system trash instead of deleting it permanently."
+  (interactive)
+  (let ((path (get-text-property (point) 'obsidian-path)))
+    (unless (and path (file-regular-p path))
+      (user-error "Place the cursor on a note file before pressing Esc"))
+    (let ((action (if obsidian-delete-by-moving-to-trash
+                      "move to trash" "delete permanently")))
+      (when (yes-or-no-p (format "%s: %s? "
+                                 (capitalize action)
+                                 (file-name-nondirectory path)))
+        (let ((visiting-buffer (find-buffer-visiting path))
+              (was-current (and obsidian--current-file
+                                (file-equal-p path obsidian--current-file))))
+          ;; The optional TRASH argument is supported by `delete-file' and
+          ;; delegates to the platform-specific trash implementation.
+          (delete-file path obsidian-delete-by-moving-to-trash)
+          (when was-current
+            (setq obsidian--current-file nil
+                  obsidian--current-scope (file-name-directory path))
+            (when (buffer-live-p visiting-buffer)
+              (with-current-buffer visiting-buffer
+                (set-buffer-modified-p nil))
+              (kill-buffer visiting-buffer))
+            (let ((editor-window (obsidian--editor-window)))
+              (when (window-live-p editor-window)
+                (set-window-buffer editor-window
+                                   (obsidian--empty-editor-buffer)))))
+          (obsidian--tree-refresh)
+          (obsidian--schedule-graph-update)
+          (message "%s: %s" (capitalize action)
+                   (file-name-nondirectory path)))))))
 
 (provide 'obsidian-tree)
 ;;; obsidian-tree.el ends here

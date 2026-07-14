@@ -101,6 +101,44 @@
     (should (= 12 (string-width
                    (obsidian--display-column-slice line 4 12))))))
 
+(ert-deftest obsidian-tree-escape-deletes-confirmed-note ()
+  (let* ((directory (make-temp-file "obsidian-delete-test-" t))
+         (file (expand-file-name "unused.md" directory))
+         (obsidian-delete-by-moving-to-trash nil)
+         (obsidian--current-file nil))
+    (unwind-protect
+        (progn
+          (with-temp-file file (insert "unused\n"))
+          (with-temp-buffer
+            (insert (propertize "unused.md" 'obsidian-path file))
+            (goto-char (point-min))
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                      ((symbol-function 'obsidian--tree-refresh) #'ignore)
+                      ((symbol-function 'obsidian--schedule-graph-update) #'ignore))
+              (obsidian--tree-delete-file)))
+          (should-not (file-exists-p file)))
+      (delete-directory directory t))))
+
+(ert-deftest obsidian-tree-escape-keeps-declined-note ()
+  (let* ((directory (make-temp-file "obsidian-keep-test-" t))
+         (file (expand-file-name "keep.md" directory))
+         (obsidian-delete-by-moving-to-trash nil)
+         (obsidian--current-file nil))
+    (unwind-protect
+        (progn
+          (with-temp-file file (insert "keep\n"))
+          (with-temp-buffer
+            (insert (propertize "keep.md" 'obsidian-path file))
+            (goto-char (point-min))
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil)))
+              (obsidian--tree-delete-file)))
+          (should (file-exists-p file)))
+      (delete-directory directory t))))
+
+(ert-deftest obsidian-tree-escape-is-bound-to-delete ()
+  (should (eq (lookup-key obsidian-tree-mode-map (kbd "<escape>"))
+              #'obsidian--tree-delete-file)))
+
 (ert-deftest obsidian-note-path-cannot-escape-vault ()
   (let ((obsidian--vault obsidian-test--vault))
     (should-error (obsidian--safe-note-path "../../outside" obsidian-test--vault)

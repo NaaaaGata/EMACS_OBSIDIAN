@@ -45,6 +45,7 @@ Emacs 内で Obsidian のような Markdown ノート環境を使うパッケー
 | `TAB` / `→` | フォルダを展開 |
 | `←` | フォルダを折りたたむ |
 | `n` | 新しいノートを作る |
+| `Esc` | ファイルを確認後にゴミ箱へ移動 |
 | `g` / `r` | ツリーを更新 |
 | `<` / `>` | 左パネルを縮小／拡大 |
 
@@ -96,6 +97,7 @@ Emacs 内で Obsidian のような Markdown ノート環境を使うパッケー
 - `obsidian-auto-timestamp`
 - `obsidian-timestamp-format`
 - `obsidian-save-window-sizes`
+- `obsidian-delete-by-moving-to-trash`
 
 ## テスト
 

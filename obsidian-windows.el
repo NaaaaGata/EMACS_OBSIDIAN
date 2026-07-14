@@ -24,6 +24,7 @@
 (declare-function obsidian--tree-collapse "obsidian-tree")
 (declare-function obsidian--tree-expand "obsidian-tree")
 (declare-function obsidian--tree-mouse-open "obsidian-tree")
+(declare-function obsidian--tree-delete-file "obsidian-tree")
 (declare-function obsidian-tree-mode "obsidian-tree")
 (declare-function obsidian-refresh-graph "obsidian-graph")
 (declare-function obsidian--graph-open-at-point "obsidian-graph")
@@ -66,6 +67,10 @@
 
 (defcustom obsidian-save-window-sizes t
   "If non-nil, window sizes are saved and restored on next launch."
+  :type 'boolean :group 'obsidian)
+
+(defcustom obsidian-delete-by-moving-to-trash t
+  "If non-nil, move deleted notes to the operating system trash."
   :type 'boolean :group 'obsidian)
 
 (defcustom obsidian-window-sizes-file
@@ -130,6 +135,7 @@
     (define-key m [mouse-1]       #'obsidian--tree-mouse-open)
     (define-key m (kbd "g")       #'obsidian--tree-refresh)
     (define-key m (kbd "n")       #'obsidian-create-note)
+    (define-key m (kbd "<escape>") #'obsidian--tree-delete-file)
     (define-key m (kbd "r")       #'obsidian--tree-refresh)
     (define-key m (kbd "q")       #'obsidian--tree-refresh)
     m))
@@ -155,6 +161,20 @@
 
 
 ;; Window setup
+
+(defun obsidian--empty-editor-buffer ()
+  "Return a freshly initialized empty Obsidian editor buffer."
+  (let ((buffer (get-buffer-create obsidian-editor-buffer-name-prefix)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (fundamental-mode)
+        (erase-buffer)
+        (insert "Obsidian workspace ready.\n\n"
+                "Click a file on the left, or press C-c o n to create a note.\n"
+                "Press C-c o l to insert a link, M-RET to follow a link.\n")
+        (read-only-mode 1)
+        (obsidian-editor-mode 1)))
+    buffer))
 
 (defconst obsidian--minimum-editor-width 20
   "Minimum width reserved for the center editor pane.")
@@ -249,16 +269,7 @@ Saved ratios take precedence over legacy absolute widths."
         (unless (eq major-mode 'obsidian-graph-mode)
           (obsidian-graph-mode)))
       (set-window-buffer right-win buf))
-    (let ((buf (get-buffer-create obsidian-editor-buffer-name-prefix)))
-      (with-current-buffer buf
-        (fundamental-mode)
-        (erase-buffer)
-        (insert "Obsidian workspace ready.\n\n"
-                "Click a file on the left, or press C-c o n to create a note.\n"
-                "Press C-c o l to insert a link, M-RET to follow a link.\n")
-        (read-only-mode 1)
-        (obsidian-editor-mode 1))
-      (set-window-buffer center-win buf))
+    (set-window-buffer center-win (obsidian--empty-editor-buffer))
     ;; Split sizes use total columns, while the persistence file stores body
     ;; columns.  Correct both panels after all three windows exist.
     (obsidian--restore-body-width right-win graph-width)
