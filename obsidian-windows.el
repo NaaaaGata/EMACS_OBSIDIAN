@@ -93,6 +93,11 @@
     (define-key m (kbd "<down>")  #'obsidian--graph-move-down)
     (define-key m (kbd "<left>")  #'obsidian--graph-move-left)
     (define-key m (kbd "<right>") #'obsidian--graph-move-right)
+    (define-key m (kbd "0")       #'obsidian--graph-center-camera)
+    (define-key m (kbd "h")       #'obsidian--graph-move-left)
+    (define-key m (kbd "j")       #'obsidian--graph-move-down)
+    (define-key m (kbd "k")       #'obsidian--graph-move-up)
+    (define-key m (kbd "l")       #'obsidian--graph-move-right)
     (define-key m [mouse-1]       #'obsidian--graph-mouse-open)
     m))
 

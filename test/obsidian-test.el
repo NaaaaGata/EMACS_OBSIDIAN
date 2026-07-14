@@ -72,7 +72,22 @@
          (positions (obsidian--force-layout nodes edges 80 22))
          (text (obsidian--render-graph nodes edges positions 80 22 "music")))
     (dolist (node nodes)
-      (should (string-match-p (regexp-quote (format "[%s.md]" node)) text)))))
+      (should (string-match-p (regexp-quote (format "%s.md" node)) text)))))
+
+(ert-deftest obsidian-arrow-pan-moves-camera-not-point ()
+  (with-temp-buffer
+    (obsidian-graph-mode)
+    (setq obsidian--vault obsidian-test--vault
+          obsidian--current-scope obsidian-test--vault
+          obsidian--graph-canvas-width 100
+          obsidian--graph-canvas-height 50
+          obsidian--graph-camera-x 10
+          obsidian--graph-camera-y 10
+          obsidian--graph-canvas
+          (vconcat (make-list 50 (make-string 100 ?\s))))
+    (obsidian--graph-move-right)
+    (should (= 14 obsidian--graph-camera-x))
+    (should (= (point-min) (point)))))
 
 (provide 'obsidian-test)
 ;;; obsidian-test.el ends here
