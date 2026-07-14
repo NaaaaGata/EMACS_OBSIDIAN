@@ -23,6 +23,9 @@
 (declare-function obsidian--editor-window "obsidian-windows")
 (declare-function obsidian--note-file-p "obsidian-tree")
 
+(defvar-local obsidian--saved-link-names nil
+  "Wiki-link targets recorded when this note was opened or last saved.")
+
 
 ;; Editor minor mode
 
@@ -35,7 +38,9 @@
         ;; Buffer-local registration avoids running Obsidian work after every
         ;; save in unrelated Emacs buffers.
         (add-hook 'after-save-hook #'obsidian--after-save nil t)
-        (obsidian--fontify-links))
+        (obsidian--fontify-links)
+        ;; Keep the pre-edit targets so a simple link edit can rename its note.
+        (setq obsidian--saved-link-names (obsidian--link-names-in-buffer)))
     (remove-hook 'after-save-hook #'obsidian--after-save t)))
 
 
@@ -139,6 +144,17 @@ Unless NO-RECORD, push the previous file onto the history."
   "Return the note name portion of wiki-link TARGET."
   (string-trim (car (split-string target "[|#]"))))
 
+(defun obsidian--link-names-in-buffer ()
+  "Return the unique wiki-link note names in the current buffer."
+  (let (names)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward obsidian-link-regexp nil t)
+        (let ((name (obsidian--link-name (match-string-no-properties 1))))
+          (unless (string-empty-p name)
+            (push name names)))))
+    (delete-dups (nreverse names))))
+
 
 ;; Note creation
 
@@ -196,6 +212,40 @@ NAME can include a subdirectory path relative to the vault, e.g. \"music/song\".
 
 ;; Auto-create linked files on save
 
+(defun obsidian--rename-edited-link-target (new-link-names)
+  "Rename one unambiguous edited link target using NEW-LINK-NAMES.
+The rename is performed only when exactly one old target disappeared and one
+new target appeared.  This avoids guessing after a larger link edit."
+  (let ((removed (cl-set-difference obsidian--saved-link-names new-link-names
+                                    :test #'string=))
+        (added (cl-set-difference new-link-names obsidian--saved-link-names
+                                  :test #'string=)))
+    (when (and (= (length removed) 1) (= (length added) 1))
+      (let* ((old-name (car removed))
+             (new-name (car added))
+             (old-file (obsidian--find-note old-name)))
+        (when old-file
+          ;; A renamed note stays beside the old note, even when the editing
+          ;; note and the link target live in different directories.
+          (let ((new-file (obsidian--safe-note-path
+                           new-name (file-name-directory old-file))))
+            (unless (or (file-exists-p new-file)
+                        (obsidian--find-note new-name))
+              (let ((target-buffer (find-buffer-visiting old-file))
+                    (renamed-current
+                     (and obsidian--current-file
+                          (file-equal-p obsidian--current-file old-file))))
+                (make-directory (file-name-directory new-file) t)
+                (rename-file old-file new-file)
+                (when (buffer-live-p target-buffer)
+                  (with-current-buffer target-buffer
+                    (set-visited-file-name new-file t)))
+                (when renamed-current
+                  (setq obsidian--current-file new-file))
+                (message "Renamed linked note: %s -> %s"
+                         (file-name-nondirectory old-file)
+                         (file-name-nondirectory new-file))))))))))
+
 (defun obsidian--safe-note-path (name base-directory)
   "Return a safe note path for NAME below BASE-DIRECTORY and the vault."
   (when (string-empty-p (string-trim name))
@@ -243,8 +293,11 @@ New files are created in the same directory as the current file."
   (when (and obsidian--vault
              (buffer-file-name)
              (obsidian--note-file-p (buffer-file-name)))
-    (save-excursion
-      (obsidian--auto-create-linked-files))
+    (let ((new-link-names (obsidian--link-names-in-buffer)))
+      (obsidian--rename-edited-link-target new-link-names)
+      (save-excursion
+        (obsidian--auto-create-linked-files))
+      (setq obsidian--saved-link-names new-link-names))
     (obsidian--fontify-links)
     (when (get-buffer obsidian-tree-buffer-name)
       (obsidian--tree-refresh))

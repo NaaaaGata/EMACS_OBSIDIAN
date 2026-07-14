@@ -139,6 +139,34 @@
   (should (eq (lookup-key obsidian-tree-mode-map (kbd "<escape>"))
               #'obsidian--tree-delete-file)))
 
+(ert-deftest obsidian-edited-link-renames-existing-note ()
+  (let* ((vault (make-temp-file "obsidian-link-rename-" t))
+         (old-file (expand-file-name "1234.md" vault))
+         (new-file (expand-file-name "12345.md" vault))
+         (obsidian--vault vault)
+         (obsidian--current-file nil)
+         (obsidian--saved-link-names '("1234")))
+    (unwind-protect
+        (progn
+          (with-temp-file old-file (insert "# 1234\n"))
+          (obsidian--rename-edited-link-target '("12345"))
+          (should-not (file-exists-p old-file))
+          (should (file-exists-p new-file)))
+      (delete-directory vault t))))
+
+(ert-deftest obsidian-multiple-edited-links-do-not-guess-a-rename ()
+  (let* ((vault (make-temp-file "obsidian-link-no-rename-" t))
+         (old-file (expand-file-name "old-a.md" vault))
+         (obsidian--vault vault)
+         (obsidian--current-file nil)
+         (obsidian--saved-link-names '("old-a" "old-b")))
+    (unwind-protect
+        (progn
+          (with-temp-file old-file (insert "# old-a\n"))
+          (obsidian--rename-edited-link-target '("new-a" "new-b"))
+          (should (file-exists-p old-file)))
+      (delete-directory vault t))))
+
 (ert-deftest obsidian-note-path-cannot-escape-vault ()
   (let ((obsidian--vault obsidian-test--vault))
     (should-error (obsidian--safe-note-path "../../outside" obsidian-test--vault)
