@@ -1,0 +1,221 @@
+;;; obsidian-editor.el --- Editor mode, links, notes, auto-create -*- lexical-binding: t; -*-
+
+;;; Code:
+
+(require 'cl-lib)
+
+(declare-function obsidian--tree-refresh "obsidian-tree")
+(declare-function obsidian--schedule-graph-update "obsidian-graph")
+(declare-function obsidian--find-note "obsidian-graph")
+(declare-function obsidian--all-note-files "obsidian-graph")
+(declare-function obsidian--all-note-names "obsidian-graph")
+
+
+;; Editor minor mode
+
+(define-minor-mode obsidian-editor-mode
+  "Minor mode for the Obsidian editor window."
+  :lighter " Obs"
+  :keymap obsidian-editor-mode-map
+  (when obsidian-editor-mode
+    (obsidian--fontify-links)
+    (obsidian--setup-mouse)))
+
+
+;; Note opening
+
+(defun obsidian--open-note (file &optional no-record)
+  "Open FILE in the editor window.
+Unless NO-RECORD, push the previous file onto the history."
+  (when (and obsidian--current-file (not no-record))
+    (with-current-buffer (window-buffer (obsidian--editor-window))
+      (push (cons obsidian--current-file (point)) obsidian--history)))
+  (setq obsidian--current-file (expand-file-name file))
+  (setq obsidian--current-scope (file-name-directory obsidian--current-file))
+  (let ((buf (find-file-noselect obsidian--current-file)))
+    (set-window-buffer (obsidian--editor-window) buf)
+    (with-current-buffer buf
+      (obsidian-editor-mode 1)
+      (obsidian--fontify-links)
+      (obsidian--setup-mouse))
+    (when (get-buffer obsidian-editor-buffer-name-prefix)
+      (kill-buffer obsidian-editor-buffer-name-prefix))
+    (select-window (obsidian--editor-window))
+    (obsidian--tree-refresh)
+    (obsidian--schedule-graph-update)))
+
+
+;; Link rendering
+
+(defvar obsidian-link-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'obsidian--mouse-follow-link)
+    map)
+  "Keymap placed only on rendered wiki links.")
+
+(defun obsidian--fontify-links ()
+  "Apply link face to wiki links in the current buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward obsidian-link-regexp nil t)
+      (put-text-property (match-beginning 0) (match-end 0)
+                         'face 'obsidian-link))))
+
+(defun obsidian--setup-mouse ()
+  "Make links in the current buffer clickable with the mouse."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward obsidian-link-regexp nil t)
+      (let ((b (match-beginning 0))
+            (e (match-end 0)))
+        (put-text-property b e 'mouse-face 'highlight)
+        (put-text-property b e 'keymap obsidian-link-map)))))
+
+(defun obsidian--mouse-follow-link (event)
+  "Follow the wiki link under the mouse click EVENT."
+  (interactive "e")
+  (posn-set-point (event-end event))
+  (obsidian-follow-link-at-point))
+
+
+;; Link operations
+
+(defun obsidian-insert-link (target &optional alias)
+  "Insert a wiki link to TARGET, with optional ALIAS."
+  (interactive
+   (list (completing-read "Link to: " (obsidian--all-note-names))
+         (read-string "Alias (optional): ")))
+  (insert (if (string-empty-p alias)
+              (format "[[%s]]" target)
+            (format "[[%s|%s]]" target alias)))
+  (obsidian--fontify-links))
+
+(defun obsidian-follow-link-at-point ()
+  "Follow the wiki link at or near point."
+  (interactive)
+  (let ((target (obsidian--link-target-at-point)))
+    (unless target
+      (user-error "No link at point"))
+    (let* ((base (car (split-string target "|")))
+           (name (string-trim base))
+           (file (obsidian--find-note name)))
+      (if file
+          (obsidian--open-note file)
+        (when (y-or-n-p (format "Note \"%s\" does not exist. Create it? " name))
+          (obsidian--create-note-impl name))))))
+
+(defun obsidian--link-target-at-point ()
+  "Return the inner text of the wiki link at point, or nil."
+  (save-excursion
+    (catch 'found
+      (when (re-search-backward "\\[\\[" (line-beginning-position 0) t)
+        (when (looking-at obsidian-link-regexp)
+          (throw 'found (match-string 1))))
+      (when (re-search-forward obsidian-link-regexp (line-end-position) t)
+        (throw 'found (match-string 1)))
+      nil)))
+
+
+;; Note creation
+
+(defcustom obsidian-auto-timestamp t
+  "If non-nil, insert a timestamp when creating a new note."
+  :type 'boolean
+  :group 'obsidian)
+
+(defcustom obsidian-timestamp-format "[%Y-%m-%d %a %H:%M]"
+  "Format string for auto-inserted timestamp.
+Uses `format-time-string' syntax."
+  :type 'string
+  :group 'obsidian)
+
+(defun obsidian-create-note (name)
+  "Create and open a new note NAME.
+NAME can include a subdirectory path relative to the vault, e.g. \"music/song\"."
+  (interactive
+   (list (read-string "New note name (use / for subdirectory): "
+                      (and (use-region-p)
+                           (buffer-substring-no-properties
+                            (region-beginning) (region-end))))))
+  (obsidian--create-note-impl name))
+
+(defun obsidian--create-note-impl (name)
+  "Create and open a note named NAME."
+  (let* ((file (expand-file-name
+                (concat name "." obsidian-file-extension)
+                obsidian--vault))
+         (existed (file-exists-p file)))
+    (unless existed
+      (make-directory (file-name-directory file) t)
+      (with-temp-file file
+        (insert (format "# %s\n\n" (file-name-base name)))
+        (when obsidian-auto-timestamp
+          (insert (format "%s\n\n" (format-time-string obsidian-timestamp-format))))))
+    (obsidian--open-note file)
+    (obsidian--tree-refresh)
+    (message (if existed "Opened existing note: %s" "Created note: %s") name)))
+
+
+;; Back navigation
+
+(defun obsidian-jump-back ()
+  "Jump back to the previous note in history."
+  (interactive)
+  (if (null obsidian--history)
+      (message "No history to go back to.")
+    (let* ((entry (pop obsidian--history))
+           (file (car entry))
+           (pos  (cdr entry)))
+      (obsidian--open-note file t)
+      (when (buffer-live-p (current-buffer))
+        (goto-char (min pos (point-max)))))))
+
+
+;; Auto-create linked files on save
+
+(defun obsidian--auto-create-linked-files ()
+  "Create .md files for [[link]] targets that don't exist yet.
+New files are created in the same directory as the current file."
+  (when (and obsidian--current-file obsidian--vault)
+    (let ((current-dir (file-name-directory obsidian--current-file)))
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward obsidian-link-regexp nil t)
+          (let* ((target (match-string 1))
+                 (base (car (split-string target "|")))
+                 (name (string-trim base))
+                 (file (expand-file-name
+                        (concat name "." obsidian-file-extension)
+                        current-dir)))
+            (unless (or (string-empty-p name)
+                        (file-exists-p file)
+                        (obsidian--find-note name))
+              (make-directory (file-name-directory file) t)
+              (with-temp-file file
+                (insert (format "# %s\n\n" name))
+                (when obsidian-auto-timestamp
+                  (insert (format "%s\n\n"
+                                  (format-time-string obsidian-timestamp-format)))))
+              (message "Auto-created: %s" file)
+              (when (get-buffer obsidian-tree-buffer-name)
+                (obsidian--tree-refresh)))))))))
+
+
+;; After-save hook
+
+(defun obsidian--after-save ()
+  "Refresh graph, tree, and auto-create linked files after saving."
+  (when (and obsidian--vault
+             (buffer-file-name)
+             (obsidian--note-file-p (buffer-file-name)))
+    (save-excursion
+      (obsidian--auto-create-linked-files))
+    (obsidian--fontify-links)
+    (when (get-buffer obsidian-tree-buffer-name)
+      (obsidian--tree-refresh))
+    (obsidian--schedule-graph-update)))
+
+(add-hook 'after-save-hook #'obsidian--after-save)
+
+(provide 'obsidian-editor)
+;;; obsidian-editor.el ends here
