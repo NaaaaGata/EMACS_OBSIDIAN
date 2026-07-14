@@ -10,6 +10,16 @@
 (ert-deftest obsidian-loads ()
   (should (commandp 'obsidian)))
 
+(ert-deftest obsidian-editor-wraps-in-narrow-windows ()
+  (with-temp-buffer
+    ;; This global default is what truncates text in split Emacs windows.
+    (let ((truncate-partial-width-windows 50))
+      (obsidian-editor-mode 1)
+      (should-not truncate-lines)
+      (should-not truncate-partial-width-windows)
+      (should visual-line-mode)
+      (should word-wrap))))
+
 (ert-deftest obsidian-demo-graph-has-seven-edges ()
   (let* ((obsidian--vault obsidian-test--vault)
          (obsidian--current-scope (expand-file-name "music/" obsidian-test--vault))

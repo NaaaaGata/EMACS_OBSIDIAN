@@ -35,6 +35,12 @@
   :keymap obsidian-editor-mode-map
   (if obsidian-editor-mode
       (progn
+        ;; Emacs normally truncates text in narrow side-by-side windows via
+        ;; `truncate-partial-width-windows'.  The editor pane must instead
+        ;; reflow visually whenever the frame or pane becomes narrower.
+        (setq-local truncate-lines nil)
+        (setq-local truncate-partial-width-windows nil)
+        (visual-line-mode 1)
         ;; Buffer-local registration avoids running Obsidian work after every
         ;; save in unrelated Emacs buffers.
         (add-hook 'after-save-hook #'obsidian--after-save nil t)
