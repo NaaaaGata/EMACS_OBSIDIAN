@@ -164,6 +164,33 @@
           (should (file-exists-p new-file)))
       (delete-directory vault t))))
 
+(ert-deftest obsidian-note-rename-updates-all-backlinks ()
+  (let* ((vault (make-temp-file "obsidian-backlinks-" t))
+         (old-file (expand-file-name "1234.md" vault))
+         (new-file (expand-file-name "12345.md" vault))
+         (first-file (expand-file-name "first.md" vault))
+         (second-file (expand-file-name "second.md" vault))
+         (obsidian--vault vault)
+         (obsidian--current-file nil)
+         (obsidian--saved-link-names '("1234")))
+    (unwind-protect
+        (progn
+          (with-temp-file old-file (insert "# 1234\n"))
+          (with-temp-file first-file (insert "[[1234]]\n"))
+          (with-temp-file second-file
+            (insert "[[1234|表示名]] and [[1234#見出し]]\n"))
+          (obsidian--rename-edited-link-target '("12345"))
+          (should-not (file-exists-p old-file))
+          (should (file-exists-p new-file))
+          (with-temp-buffer
+            (insert-file-contents first-file)
+            (should (equal (buffer-string) "[[12345]]\n")))
+          (with-temp-buffer
+            (insert-file-contents second-file)
+            (should (equal (buffer-string)
+                           "[[12345|表示名]] and [[12345#見出し]]\n"))))
+      (delete-directory vault t))))
+
 (ert-deftest obsidian-multiple-edited-links-do-not-guess-a-rename ()
   (let* ((vault (make-temp-file "obsidian-link-no-rename-" t))
          (old-file (expand-file-name "old-a.md" vault))

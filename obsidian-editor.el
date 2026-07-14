@@ -20,11 +20,15 @@
 (declare-function obsidian--schedule-graph-update "obsidian-graph")
 (declare-function obsidian--find-note "obsidian-graph")
 (declare-function obsidian--all-note-names "obsidian-graph")
+(declare-function obsidian--all-note-files "obsidian-graph")
 (declare-function obsidian--editor-window "obsidian-windows")
 (declare-function obsidian--note-file-p "obsidian-tree")
 
 (defvar-local obsidian--saved-link-names nil
   "Wiki-link targets recorded when this note was opened or last saved.")
+
+(defvar obsidian--backlink-update-in-progress nil
+  "Non-nil while a note rename is saving updated backlinks.")
 
 
 ;; Editor minor mode
@@ -218,6 +222,57 @@ NAME can include a subdirectory path relative to the vault, e.g. \"music/song\".
 
 ;; Auto-create linked files on save
 
+(defun obsidian--replace-link-targets-in-buffer (old-name new-name)
+  "Replace wiki-link target OLD-NAME with NEW-NAME in the current buffer.
+Aliases and heading fragments are retained.  Return the number replaced."
+  (let ((case-fold-search nil)
+        replacements)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward obsidian-link-regexp nil t)
+        (let* ((begin (match-beginning 0))
+               (end (match-end 0))
+               (target (match-string-no-properties 1))
+               (separator (string-match "[|#]" target))
+               (raw-name (if separator (substring target 0 separator) target)))
+          (when (string= (string-trim raw-name) old-name)
+            (push (list begin end
+                        (concat "[[" new-name
+                                (if separator
+                                    (substring target separator) "")
+                                "]]"))
+                  replacements))))
+      ;; Apply from the end so earlier buffer positions stay valid.
+      (dolist (replacement replacements)
+        (goto-char (nth 0 replacement))
+        (delete-region (nth 0 replacement) (nth 1 replacement))
+        (insert (nth 2 replacement))))
+    (length replacements)))
+
+(defun obsidian--update-backlinks (old-name new-name)
+  "Change every Vault link from OLD-NAME to NEW-NAME.
+Return the total number of updated links.  Visiting buffers are updated and
+saved as well, preventing a later save from restoring an obsolete link."
+  (let ((count 0)
+        (obsidian--backlink-update-in-progress t))
+    (dolist (file (obsidian--all-note-files))
+      (let ((buffer (find-buffer-visiting file)))
+        (if (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (let ((changed (obsidian--replace-link-targets-in-buffer
+                              old-name new-name)))
+                (when (> changed 0)
+                  (setq count (+ count changed))
+                  (save-buffer))))
+          (with-temp-buffer
+            (insert-file-contents file)
+            (let ((changed (obsidian--replace-link-targets-in-buffer
+                            old-name new-name)))
+              (when (> changed 0)
+                (setq count (+ count changed))
+                (write-region (point-min) (point-max) file nil 'silent)))))))
+    count))
+
 (defun obsidian--rename-edited-link-target (new-link-names)
   "Rename one unambiguous edited link target using NEW-LINK-NAMES.
 The rename is performed only when exactly one old target disappeared and one
@@ -240,7 +295,8 @@ new target appeared.  This avoids guessing after a larger link edit."
               (let ((target-buffer (find-buffer-visiting old-file))
                     (renamed-current
                      (and obsidian--current-file
-                          (file-equal-p obsidian--current-file old-file))))
+                          (file-equal-p obsidian--current-file old-file)))
+                    (backlink-count 0))
                 (make-directory (file-name-directory new-file) t)
                 (rename-file old-file new-file)
                 (when (buffer-live-p target-buffer)
@@ -248,9 +304,14 @@ new target appeared.  This avoids guessing after a larger link edit."
                     (set-visited-file-name new-file t)))
                 (when renamed-current
                   (setq obsidian--current-file new-file))
-                (message "Renamed linked note: %s -> %s"
+                ;; Rewrite references only after the filesystem rename has
+                ;; succeeded, so a rename error cannot leave partial links.
+                (setq backlink-count
+                      (obsidian--update-backlinks old-name new-name))
+                (message "Renamed linked note: %s -> %s (%d backlinks updated)"
                          (file-name-nondirectory old-file)
-                         (file-name-nondirectory new-file))))))))))
+                         (file-name-nondirectory new-file)
+                         backlink-count)))))))))
 
 (defun obsidian--safe-note-path (name base-directory)
   "Return a safe note path for NAME below BASE-DIRECTORY and the vault."
@@ -300,9 +361,10 @@ New files are created in the same directory as the current file."
              (buffer-file-name)
              (obsidian--note-file-p (buffer-file-name)))
     (let ((new-link-names (obsidian--link-names-in-buffer)))
-      (obsidian--rename-edited-link-target new-link-names)
-      (save-excursion
-        (obsidian--auto-create-linked-files))
+      (unless obsidian--backlink-update-in-progress
+        (obsidian--rename-edited-link-target new-link-names)
+        (save-excursion
+          (obsidian--auto-create-linked-files)))
       (setq obsidian--saved-link-names new-link-names))
     (obsidian--fontify-links)
     (when (get-buffer obsidian-tree-buffer-name)
