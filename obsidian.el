@@ -3,10 +3,10 @@
 ;; Copyright (C) 2026  osadayuushi
 
 ;; Author: osadayuushi
-;; Version: 0.2.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: notes, obsidian, markdown, links, graph
-;; URL: https://github.com/osadayuushi/emcas_obsidian
+;; URL: https://github.com/NaaaaGata/EMACS_OBSIDIAN
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -24,7 +24,7 @@
 ;;; Commentary:
 ;;
 ;;  Obsidian-like note-taking workspace for Emacs.
-;;  Features: 3-window layout, wiki links, force-directed ASCII graph,
+;;  Features: 3-window layout, wiki links, force-directed text graph,
 ;;  LaTeX preview, auto file creation, timestamp insertion.
 
 ;;; Code:

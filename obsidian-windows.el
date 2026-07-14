@@ -1,8 +1,39 @@
 ;;; obsidian-windows.el --- Window layout and resizing -*- lexical-binding: t; -*-
 
+;;; Commentary:
+;; Owns the three-pane layout, panel keymaps, resizing, and persisted widths.
+
 ;;; Code:
 
 (require 'cl-lib)
+
+;; Other modules are loaded after this foundational window module.  Explicit
+;; declarations keep standalone byte compilation useful without circular
+;; `require' calls.
+(declare-function obsidian "obsidian")
+(declare-function obsidian-insert-link "obsidian-editor")
+(declare-function obsidian-follow-link-at-point "obsidian-editor")
+(declare-function obsidian-create-note "obsidian-editor")
+(declare-function obsidian-jump-back "obsidian-editor")
+(declare-function obsidian-editor-mode "obsidian-editor")
+(declare-function obsidian-toggle-latex-preview "obsidian-latex")
+(declare-function obsidian-refresh-tree "obsidian-tree")
+(declare-function obsidian--tree-refresh "obsidian-tree")
+(declare-function obsidian--tree-open "obsidian-tree")
+(declare-function obsidian--tree-toggle "obsidian-tree")
+(declare-function obsidian--tree-collapse "obsidian-tree")
+(declare-function obsidian--tree-expand "obsidian-tree")
+(declare-function obsidian--tree-mouse-open "obsidian-tree")
+(declare-function obsidian-tree-mode "obsidian-tree")
+(declare-function obsidian-refresh-graph "obsidian-graph")
+(declare-function obsidian--graph-open-at-point "obsidian-graph")
+(declare-function obsidian--graph-mouse-open "obsidian-graph")
+(declare-function obsidian--graph-center-camera "obsidian-graph")
+(declare-function obsidian--graph-move-up "obsidian-graph")
+(declare-function obsidian--graph-move-down "obsidian-graph")
+(declare-function obsidian--graph-move-left "obsidian-graph")
+(declare-function obsidian--graph-move-right "obsidian-graph")
+(declare-function obsidian-graph-mode "obsidian-graph")
 
 (defgroup obsidian nil
   "Obsidian-like note-taking environment for Emacs."
@@ -14,38 +45,40 @@
 
 (defcustom obsidian-graph-width 40
   "Width (in characters) of the graph view window."
-  :type 'integer)
+  :type 'integer :group 'obsidian)
 
 (defcustom obsidian-tree-width 30
   "Width (in characters) of the file tree window."
-  :type 'integer)
+  :type 'integer :group 'obsidian)
 
 (defcustom obsidian-save-window-sizes t
   "If non-nil, window sizes are saved and restored on next launch."
-  :type 'boolean)
+  :type 'boolean :group 'obsidian)
 
 (defcustom obsidian-window-sizes-file
   (expand-file-name "obsidian-window-sizes" user-emacs-directory)
   "File where window sizes are persisted."
-  :type 'file)
+  :type 'file :group 'obsidian)
 
 (defcustom obsidian-tree-buffer-name "*Obsidian Tree*"
   "Name of the file tree buffer."
-  :type 'string)
+  :type 'string :group 'obsidian)
 
 (defcustom obsidian-graph-buffer-name "*Obsidian Graph*"
   "Name of the graph view buffer."
-  :type 'string)
+  :type 'string :group 'obsidian)
 
 (defcustom obsidian-editor-buffer-name-prefix "*Obsidian Editor*"
   "Prefix used for the editor window's dedicated buffer slot."
-  :type 'string)
+  :type 'string :group 'obsidian)
 
 
 ;; Internal variables
 
-(defvar obsidian--saved-tree-width nil)
-(defvar obsidian--saved-graph-width nil)
+(defvar obsidian--saved-tree-width nil
+  "Tree width loaded from the persistence file.")
+(defvar obsidian--saved-graph-width nil
+  "Graph width loaded from the persistence file.")
 
 
 ;; Keymaps
@@ -105,13 +138,20 @@
 ;; Window setup
 
 (defun obsidian--setup-windows ()
-  "Create the three-window Obsidian layout."
+  "Create a three-window layout that fits the current frame."
   (delete-other-windows)
-  (let (left-win center-win right-win)
-    (setq right-win (split-window-right (- (or obsidian--saved-graph-width
-                                               obsidian-graph-width))))
-    (setq left-win  (split-window nil (or obsidian--saved-tree-width
-                                          obsidian-tree-width) 'left))
+  (let* ((total (window-total-width))
+         ;; Reserve at least 20 columns for editing, then share the rest.
+         (side-limit (max 10 (/ (- total 20) 2)))
+         (tree-width (max 10 (min side-limit
+                                  (or obsidian--saved-tree-width
+                                      obsidian-tree-width))))
+         (graph-width (max 10 (min side-limit
+                                   (or obsidian--saved-graph-width
+                                       obsidian-graph-width))))
+         left-win center-win right-win)
+    (setq right-win (split-window-right (- graph-width)))
+    (setq left-win (split-window nil tree-width 'left))
     (setq center-win (selected-window))
     (let ((buf (get-buffer-create obsidian-tree-buffer-name)))
       (with-current-buffer buf
@@ -133,16 +173,6 @@
         (read-only-mode 1)
         (obsidian-editor-mode 1))
       (set-window-buffer center-win buf))
-    (when obsidian--saved-tree-width
-      (with-selected-window left-win
-        (let ((delta (- obsidian--saved-tree-width (window-body-width))))
-          (when (not (zerop delta))
-            (enlarge-window delta 'horizontal)))))
-    (when obsidian--saved-graph-width
-      (with-selected-window right-win
-        (let ((delta (- obsidian--saved-graph-width (window-body-width))))
-          (when (not (zerop delta))
-            (enlarge-window delta 'horizontal)))))
     (select-window center-win)))
 
 (defun obsidian--editor-window ()
@@ -167,9 +197,9 @@
 (defun obsidian--save-window-sizes ()
   "Save current tree and graph window widths to file."
   (when obsidian-save-window-sizes
-    (let ((tree-win (obsidian--tree-window))
-          (graph-win (obsidian--graph-window)))
-      (when (and tree-win graph-win)
+    (let ((tree-win (get-buffer-window obsidian-tree-buffer-name))
+          (graph-win (get-buffer-window obsidian-graph-buffer-name)))
+      (when (and (window-live-p tree-win) (window-live-p graph-win))
         (with-temp-file obsidian-window-sizes-file
           (insert (format "%d %d\n"
                           (window-body-width tree-win)
@@ -192,41 +222,36 @@
           (when (> graph-w 5)
             (setq obsidian--saved-graph-width graph-w)))))))
 
+(defun obsidian--resize-panel (window delta)
+  "Resize WINDOW horizontally by DELTA and persist panel widths."
+  (when (window-live-p window)
+    (with-selected-window window
+      (enlarge-window delta 'horizontal))
+    (obsidian--save-window-sizes)))
+
 (defun obsidian-enlarge-tree (n)
   "Enlarge the tree window by N columns."
   (interactive "p")
-  (let ((win (obsidian--tree-window)))
-    (when win
-      (with-selected-window win
-        (enlarge-window (- (or n 2)) 'horizontal))
-      (obsidian--save-window-sizes))))
+  (obsidian--resize-panel (obsidian--tree-window) (or n 1)))
 
 (defun obsidian-shrink-tree (n)
   "Shrink the tree window by N columns."
   (interactive "p")
-  (let ((win (obsidian--tree-window)))
-    (when win
-      (with-selected-window win
-        (enlarge-window (or n 2) 'horizontal))
-      (obsidian--save-window-sizes))))
+  (obsidian--resize-panel (obsidian--tree-window) (- (or n 1))))
 
 (defun obsidian-enlarge-graph (n)
   "Enlarge the graph window by N columns."
   (interactive "p")
-  (let ((win (obsidian--graph-window)))
-    (when win
-      (with-selected-window win
-        (enlarge-window (or n 2) 'horizontal))
-      (obsidian--save-window-sizes))))
+  (obsidian--resize-panel (obsidian--graph-window) (or n 1)))
 
 (defun obsidian-shrink-graph (n)
   "Shrink the graph window by N columns."
   (interactive "p")
-  (let ((win (obsidian--graph-window)))
-    (when win
-      (with-selected-window win
-        (enlarge-window (- (or n 2)) 'horizontal))
-      (obsidian--save-window-sizes))))
+  (obsidian--resize-panel (obsidian--graph-window) (- (or n 1))))
+
+;; Save sizes even when the user closes Emacs without explicitly resizing at
+;; the end of the session.
+(add-hook 'kill-emacs-hook #'obsidian--save-window-sizes)
 
 (provide 'obsidian-windows)
 ;;; obsidian-windows.el ends here

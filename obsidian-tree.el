@@ -1,8 +1,17 @@
 ;;; obsidian-tree.el --- File tree panel -*- lexical-binding: t; -*-
 
+;;; Commentary:
+;; Builds the clickable folder tree and filters editor-generated temp files.
+
 ;;; Code:
 
 (require 'cl-lib)
+
+(defvar obsidian--vault)
+(defvar obsidian--current-scope)
+(defvar obsidian-tree-buffer-name)
+(declare-function obsidian--open-note "obsidian-editor")
+(declare-function obsidian--schedule-graph-update "obsidian-graph")
 
 (defcustom obsidian-file-extension "md"
   "File extension for notes."
@@ -38,8 +47,8 @@ TAB or left/right arrows expand/collapse directories."
 
 (defun obsidian--note-file-p (file)
   "Return non-nil if FILE is a real, readable note file.
-Emacs lock files (.#NAME), auto-save files (#NAME#), and backup files
-(NAME~) are deliberately excluded."
+Emacs lock files such as `.#NAME', auto-save files such as `#NAME#', and
+backup files such as `NAME~' are deliberately excluded."
   (let ((name (file-name-nondirectory file)))
     (and (string-suffix-p (concat "." obsidian-file-extension) name)
          (not (string-prefix-p ".#" name))
@@ -70,9 +79,11 @@ Emacs lock files (.#NAME), auto-save files (#NAME#), and backup files
       (set-buffer-modified-p nil))))
 
 (defun obsidian--tree-insert (dir depth expanded)
-  "Insert DIR at DEPTH into the tree buffer."
+  "Insert DIR at DEPTH using the EXPANDED directory table."
+  ;; Let `directory-files' sort alphabetically.  A stable tree is easier to
+  ;; scan and does not jump around between operating systems.
   (let* ((entries (ignore-errors
-                    (directory-files dir t "^[^.]" t)))
+                    (directory-files dir t "^[^.]" nil)))
          (dirs  (cl-remove-if-not #'file-directory-p entries))
          (files (cl-remove-if (lambda (f)
                                 (or (file-directory-p f)

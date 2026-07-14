@@ -1,10 +1,23 @@
 ;;; obsidian-graph.el --- Pannable text graph view -*- lexical-binding: t; -*-
 
+;;; Commentary:
+;; Builds a deterministic force-directed layout, routes edges with Unicode
+;; box-drawing characters, and exposes a game-like pannable viewport.
+
 ;;; Code:
 
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+
+(defvar obsidian--vault)
+(defvar obsidian--current-file)
+(defvar obsidian--current-scope)
+(defvar obsidian--graph-timer)
+(defvar obsidian-file-extension)
+(defvar obsidian-link-regexp)
+(defvar obsidian-graph-width)
+(defvar obsidian-graph-buffer-name)
 
 (declare-function obsidian--open-note "obsidian-editor")
 (declare-function obsidian--note-file-p "obsidian-tree")
@@ -116,7 +129,7 @@
 ;;; Force-directed layout
 
 (defun obsidian--force-layout (nodes edges width height)
-  "Lay out NODES on a virtual WIDTH by HEIGHT canvas."
+  "Lay out NODES and EDGES on a virtual WIDTH by HEIGHT canvas."
   (let* ((count (max 1 (length nodes)))
          (cx (/ width 2.0)) (cy (/ height 2.0))
          (natural (max 8.0 (sqrt (/ (* width height) count))))
@@ -172,7 +185,7 @@
     (obsidian--quantize-positions nodes positions width height)))
 
 (defun obsidian--quantize-positions (nodes positions width height)
-  "Scale POSITIONS and prevent labels from visually crowding one another."
+  "Scale NODES in POSITIONS to WIDTH by HEIGHT without label crowding."
   (let* ((values (mapcar (lambda (node) (gethash node positions)) nodes))
          (xmin (apply #'min (mapcar #'car values)))
          (xmax (apply #'max (mapcar #'car values)))
@@ -217,34 +230,90 @@
 
 ;;; Canvas rendering
 
-(defun obsidian--line-cells (x0 y0 x1 y1)
-  "Return Bresenham cells from X0,Y0 to X1,Y1."
-  (let ((dx (abs (- x1 x0))) (sx (if (< x0 x1) 1 -1))
-        (dy (- (abs (- y1 y0)))) (sy (if (< y0 y1) 1 -1))
-        (err 0) cells done)
-    (setq err (+ dx dy))
-    (while (not done)
-      (push (cons x0 y0) cells)
-      (if (and (= x0 x1) (= y0 y1))
-          (setq done t)
-        (let ((twice (* 2 err)))
-          (when (>= twice dy) (cl-incf err dy) (cl-incf x0 sx))
-          (when (<= twice dx) (cl-incf err dx) (cl-incf y0 sy)))))
-    (nreverse cells)))
+;; Each edge cell stores a four-bit connection mask.  Combining masks before
+;; choosing a glyph gives correct corners and junctions without // or \\
+;; staircases.  Bits are north=1, east=2, south=4, west=8.
+(defconst obsidian--graph-direction-north 1)
+(defconst obsidian--graph-direction-east 2)
+(defconst obsidian--graph-direction-south 4)
+(defconst obsidian--graph-direction-west 8)
 
-(defun obsidian--edge-character (dx dy)
-  "Choose a Unicode line character for vector DX,DY."
-  (cond ((> (abs dx) (* 2 (abs dy))) ?─)
-        ((> (abs dy) (* 2 (abs dx))) ?│)
-        ((> (* dx dy) 0) ?╲)
-        (t ?╱)))
+(defun obsidian--integer-range (start end)
+  "Return all integers from START to END, in either direction."
+  (let ((step (if (<= start end) 1 -1)) values)
+    (while (/= start end)
+      (push start values)
+      (setq start (+ start step)))
+    (nreverse (cons end values))))
+
+(defun obsidian--orthogonal-path (from to horizontal-first)
+  "Return an L-shaped path from FROM to TO.
+When HORIZONTAL-FIRST is non-nil, use the horizontal leg first."
+  (let ((x0 (car from)) (y0 (cdr from))
+        (x1 (car to)) (y1 (cdr to)))
+    (if horizontal-first
+        (append (mapcar (lambda (x) (cons x y0))
+                        (obsidian--integer-range x0 x1))
+                (cdr (mapcar (lambda (y) (cons x1 y))
+                             (obsidian--integer-range y0 y1))))
+      (append (mapcar (lambda (y) (cons x0 y))
+                      (obsidian--integer-range y0 y1))
+              (cdr (mapcar (lambda (x) (cons x y1))
+                           (obsidian--integer-range x0 x1)))))))
+
+(defun obsidian--path-obstacle-score (path blocked)
+  "Score PATH by how many label cells it crosses in BLOCKED."
+  (cl-count-if (lambda (cell) (gethash cell blocked))
+               (cdr (butlast path))))
+
+(defun obsidian--choose-orthogonal-path (from to blocked)
+  "Choose the less obstructed path FROM to TO using BLOCKED cells."
+  (let ((horizontal (obsidian--orthogonal-path from to t))
+        (vertical (obsidian--orthogonal-path from to nil)))
+    (if (<= (obsidian--path-obstacle-score horizontal blocked)
+            (obsidian--path-obstacle-score vertical blocked))
+        horizontal
+      vertical)))
+
+(defun obsidian--segment-directions (from to)
+  "Return direction bits for the adjacent cells FROM and TO."
+  (cond ((< (car from) (car to))
+         (cons obsidian--graph-direction-east obsidian--graph-direction-west))
+        ((> (car from) (car to))
+         (cons obsidian--graph-direction-west obsidian--graph-direction-east))
+        ((< (cdr from) (cdr to))
+         (cons obsidian--graph-direction-south obsidian--graph-direction-north))
+        (t
+         (cons obsidian--graph-direction-north obsidian--graph-direction-south))))
+
+(defun obsidian--add-path-to-masks (path masks)
+  "Merge every adjacent segment in PATH into the MASKS grid."
+  (cl-loop for tail on path while (cdr tail) do
+           (let* ((from (car tail)) (to (cadr tail))
+                  (directions (obsidian--segment-directions from to))
+                  (from-row (aref masks (cdr from)))
+                  (to-row (aref masks (cdr to))))
+             (aset from-row (car from)
+                   (logior (aref from-row (car from)) (car directions)))
+             (aset to-row (car to)
+                   (logior (aref to-row (car to)) (cdr directions))))))
+
+(defun obsidian--mask-character (mask)
+  "Convert four-direction MASK to a Unicode box-drawing character."
+  (aref [32 9474 9472 9492 9474 9474 9484 9500
+         9472 9496 9472 9524 9488 9508 9516 9532]
+        mask))
 
 (defun obsidian--render-canvas (nodes edges positions width height current)
-  "Build a large, readable and clickable graph canvas."
+  "Render NODES and EDGES at POSITIONS on a WIDTH by HEIGHT canvas.
+CURRENT names the active node."
   (let ((grid (make-vector height nil))
+        (masks (make-vector height nil))
         (blocked (make-hash-table :test #'equal))
         (connected (obsidian--connected-nodes current edges)))
-    (dotimes (row height) (aset grid row (make-vector width ?\s)))
+    (dotimes (row height)
+      (aset grid row (make-vector width ?\s))
+      (aset masks row (make-vector width 0)))
     ;; Protect only label text.  The marker stays available as an edge anchor,
     ;; so connections visibly reach ●/◆ instead of stopping several cells away.
     (dolist (node nodes)
@@ -253,20 +322,21 @@
         (cl-loop for xx from (+ x 2)
                  to (min (1- width) (+ x (string-width label))) do
                  (puthash (cons xx y) t blocked))))
-    ;; Edges are the lower layer.  Crossings become a single clear cross.
+    ;; Route edges at right angles.  Of the two possible L-shaped routes, use
+    ;; the one that crosses fewer labels.
     (dolist (edge edges)
       (let* ((a (cdr (assoc (car edge) positions)))
              (b (cdr (assoc (cdr edge) positions))))
         (when (and a b)
-          (let ((char (obsidian--edge-character (- (car b) (car a))
-                                                (- (cdr b) (cdr a)))))
-            (dolist (cell (cdr (butlast (obsidian--line-cells
-                                         (car a) (cdr a) (car b) (cdr b)))))
-              (unless (gethash cell blocked)
-                (let* ((row (aref grid (cdr cell)))
-                       (old (aref row (car cell))))
-                  (aset row (car cell)
-                        (if (or (= old ?\s) (= old char)) char ?┼)))))))))
+          (obsidian--add-path-to-masks
+           (obsidian--choose-orthogonal-path a b blocked) masks))))
+    ;; Materialize the merged direction masks as corners and junctions.
+    (dotimes (row height)
+      (dotimes (column width)
+        (let ((mask (aref (aref masks row) column)))
+          (unless (zerop mask)
+            (aset (aref grid row) column
+                  (obsidian--mask-character mask))))))
     (let ((canvas (make-vector height nil)))
       (dotimes (row height)
         (aset canvas row (concat (append (aref grid row) nil))))
@@ -295,7 +365,8 @@
   (mapconcat #'identity (append canvas nil) "\n"))
 
 (defun obsidian--render-graph (nodes edges positions width height current)
-  "Return a complete graph as text (also used by tests)."
+  "Render NODES and EDGES at POSITIONS as WIDTH by HEIGHT text.
+CURRENT names the active node."
   (obsidian--canvas-as-string
    (obsidian--render-canvas nodes edges positions width height current)))
 
@@ -359,10 +430,18 @@
   (obsidian--graph-clamp-camera)
   (obsidian--graph-draw-view))
 
-(defun obsidian--graph-move-up () (interactive) (obsidian--graph-pan 0 -2))
-(defun obsidian--graph-move-down () (interactive) (obsidian--graph-pan 0 2))
-(defun obsidian--graph-move-left () (interactive) (obsidian--graph-pan -4 0))
-(defun obsidian--graph-move-right () (interactive) (obsidian--graph-pan 4 0))
+(defun obsidian--graph-move-up ()
+  "Pan the graph camera upward."
+  (interactive) (obsidian--graph-pan 0 -2))
+(defun obsidian--graph-move-down ()
+  "Pan the graph camera downward."
+  (interactive) (obsidian--graph-pan 0 2))
+(defun obsidian--graph-move-left ()
+  "Pan the graph camera left."
+  (interactive) (obsidian--graph-pan -4 0))
+(defun obsidian--graph-move-right ()
+  "Pan the graph camera right."
+  (interactive) (obsidian--graph-pan 4 0))
 
 ;;; Refresh and interaction
 

@@ -74,6 +74,36 @@
     (dolist (node nodes)
       (should (string-match-p (regexp-quote node) text)))))
 
+(ert-deftest obsidian-graph-uses-box-drawing-not-diagonal-stairs ()
+  (let* ((nodes '("source" "target"))
+         (edges '(("source" . "target")))
+         (positions '(("source" . (2 . 2)) ("target" . (25 . 8))))
+         (text (obsidian--render-graph nodes edges positions 40 12 nil)))
+    (should-not (string-match-p "[╱╲/\\\\]" text))
+    (should (string-match-p "[┌┐└┘]" text))))
+
+(ert-deftest obsidian-note-path-cannot-escape-vault ()
+  (let ((obsidian--vault obsidian-test--vault))
+    (should-error (obsidian--safe-note-path "../../outside" obsidian-test--vault)
+                  :type 'user-error)))
+
+(ert-deftest obsidian-simple-new-note-uses-current-scope ()
+  (let* ((vault (make-temp-file "obsidian-create-test-" t))
+         (scope (expand-file-name "music/" vault))
+         (obsidian--vault vault)
+         (obsidian--current-scope scope)
+         (obsidian-auto-timestamp nil)
+         opened)
+    (make-directory scope t)
+    (unwind-protect
+        (cl-letf (((symbol-function 'obsidian--open-note)
+                   (lambda (file &optional _no-record) (setq opened file)))
+                  ((symbol-function 'obsidian--tree-refresh) #'ignore))
+          (obsidian--create-note-impl "brass")
+          (should (equal (expand-file-name "brass.md" scope) opened))
+          (should (file-exists-p opened)))
+      (delete-directory vault t))))
+
 (ert-deftest obsidian-arrow-pan-moves-camera-not-point ()
   (with-temp-buffer
     (obsidian-graph-mode)
