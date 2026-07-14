@@ -25,6 +25,23 @@
         (obsidian--current-scope obsidian-test--vault))
     (should-not (obsidian--notes-in-current-scope))))
 
+(ert-deftest obsidian-ignores-emacs-lock-files ()
+  (let* ((vault (make-temp-file "obsidian-lock-test-" t))
+         (note (expand-file-name "fundamenta.md" vault))
+         (lock (expand-file-name ".#fundamenta.md" vault))
+         (obsidian--vault vault))
+    (unwind-protect
+        (progn
+          (with-temp-file note (insert "[[technology]]\n"))
+          ;; Emacs lock files are normally symlinks and can have no live target.
+          (make-symbolic-link "missing-user@host.123" lock)
+          (should (equal (list note) (obsidian--all-note-files)))
+          (should-not (obsidian--note-file-p lock))
+          (should-not (condition-case nil
+                          (progn (obsidian--build-edges (list note lock)) nil)
+                        (file-error t))))
+      (delete-directory vault t))))
+
 (ert-deftest obsidian-graph-labels-are-clickable ()
   (let* ((nodes '("music" "piano"))
          (edges '(("music" . "piano")))

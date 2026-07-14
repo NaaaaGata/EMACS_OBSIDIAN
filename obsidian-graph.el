@@ -36,9 +36,11 @@
 (defun obsidian--all-note-files ()
   "Return all Markdown note files in the vault."
   (when (and obsidian--vault (file-directory-p obsidian--vault))
-    (directory-files-recursively
-     obsidian--vault
-     (concat "\\." (regexp-quote obsidian-file-extension) "\\'"))))
+    (cl-remove-if-not
+     #'obsidian--note-file-p
+     (directory-files-recursively
+      obsidian--vault
+      (concat "\\." (regexp-quote obsidian-file-extension) "\\'")))))
 
 (defun obsidian--all-note-names ()
   "Return all note base names."
@@ -77,18 +79,26 @@ appear together before the user chooses a folder or note."
   "Read wiki links in FILES and return unique in-scope edges."
   (let ((allowed (mapcar #'file-name-base files)) edges)
     (dolist (file files)
-      (with-temp-buffer
-        (insert-file-contents file)
-        (goto-char (point-min))
-        (while (re-search-forward obsidian-link-regexp nil t)
-          (let ((target (string-trim
-                         (car (split-string (match-string-no-properties 1)
-                                            "[|#]")))))
-            (when (member target allowed)
-              (let* ((source (file-name-base file))
-                     (edge (if (string-lessp source target)
-                               (cons source target) (cons target source))))
-                (unless (string= source target) (push edge edges))))))))
+      ;; A note can disappear between directory scanning and this timer-driven
+      ;; read.  Skip it instead of letting an idle timer report an error.
+      (when (obsidian--note-file-p file)
+        (condition-case nil
+            (with-temp-buffer
+              (insert-file-contents file)
+              (goto-char (point-min))
+              (while (re-search-forward obsidian-link-regexp nil t)
+                (let ((target (string-trim
+                               (car (split-string
+                                     (match-string-no-properties 1)
+                                     "[|#]")))))
+                  (when (member target allowed)
+                    (let* ((source (file-name-base file))
+                           (edge (if (string-lessp source target)
+                                     (cons source target)
+                                   (cons target source))))
+                      (unless (string= source target)
+                        (push edge edges)))))))
+          (file-error nil))))
     (delete-dups edges)))
 
 (defun obsidian--connected-nodes (node edges)

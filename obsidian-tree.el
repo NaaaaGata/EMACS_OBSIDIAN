@@ -37,8 +37,17 @@ TAB or left/right arrows expand/collapse directories."
   (use-local-map obsidian-tree-mode-map))
 
 (defun obsidian--note-file-p (file)
-  "Return non-nil if FILE is a note file."
-  (string-suffix-p (concat "." obsidian-file-extension) file))
+  "Return non-nil if FILE is a real, readable note file.
+Emacs lock files (.#NAME), auto-save files (#NAME#), and backup files
+(NAME~) are deliberately excluded."
+  (let ((name (file-name-nondirectory file)))
+    (and (string-suffix-p (concat "." obsidian-file-extension) name)
+         (not (string-prefix-p ".#" name))
+         (not (and (string-prefix-p "#" name)
+                   (string-suffix-p "#" name)))
+         (not (string-suffix-p "~" name))
+         (file-regular-p file)
+         (file-readable-p file))))
 
 (defun obsidian-refresh-tree ()
   "Refresh the file tree."
