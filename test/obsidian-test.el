@@ -138,6 +138,25 @@
                    (car widths) (cdr widths))
                 42))))
 
+(ert-deftest obsidian-saved-ratios-scale-with-workspace ()
+  (let ((obsidian--saved-tree-ratio 0.20)
+        (obsidian--saved-graph-ratio 0.40)
+        (obsidian--saved-tree-width nil)
+        (obsidian--saved-graph-width nil))
+    (should (equal '(24 . 48) (obsidian--requested-panel-widths 120)))
+    (should (equal '(32 . 64) (obsidian--requested-panel-widths 160)))))
+
+(ert-deftest obsidian-loads-v2-window-ratios ()
+  (let ((file (make-temp-file "obsidian-window-ratios-"))
+        (obsidian-save-window-sizes t))
+    (unwind-protect
+        (let ((obsidian-window-sizes-file file))
+          (with-temp-file file (insert "v2 0.20000000 0.40000000\n"))
+          (obsidian--load-window-sizes)
+          (should (= 0.2 obsidian--saved-tree-ratio))
+          (should (= 0.4 obsidian--saved-graph-ratio)))
+      (delete-file file))))
+
 (ert-deftest obsidian-arrow-pan-moves-camera-not-point ()
   (with-temp-buffer
     (obsidian-graph-mode)

@@ -33,6 +33,7 @@
 (declare-function obsidian--graph-move-down "obsidian-graph")
 (declare-function obsidian--graph-move-left "obsidian-graph")
 (declare-function obsidian--graph-move-right "obsidian-graph")
+(declare-function obsidian--schedule-graph-update "obsidian-graph")
 (declare-function obsidian-graph-mode "obsidian-graph")
 
 (defgroup obsidian nil
@@ -91,6 +92,12 @@
   "Tree width loaded from the persistence file.")
 (defvar obsidian--saved-graph-width nil
   "Graph width loaded from the persistence file.")
+(defvar obsidian--saved-tree-ratio nil
+  "Tree width as a fraction of the complete workspace width.")
+(defvar obsidian--saved-graph-ratio nil
+  "Graph width as a fraction of the complete workspace width.")
+(defvar obsidian--resizing-windows nil
+  "Non-nil while Obsidian itself is resizing panes.")
 
 
 ;; Keymaps
@@ -200,16 +207,34 @@ limits.  If necessary, both panels shrink in roughly the same proportion."
       ;; graphical frames.  `window-resize' corrects that final difference.
       (ignore-errors (window-resize window delta t)))))
 
+(defun obsidian--requested-panel-widths (total)
+  "Return fitted tree and graph widths for workspace TOTAL.
+Saved ratios take precedence over legacy absolute widths."
+  (let ((tree (if obsidian--saved-tree-ratio
+                  (round (* total obsidian--saved-tree-ratio))
+                (or obsidian--saved-tree-width obsidian-tree-width)))
+        (graph (if obsidian--saved-graph-ratio
+                   (round (* total obsidian--saved-graph-ratio))
+                 (or obsidian--saved-graph-width obsidian-graph-width))))
+    (obsidian--fit-panel-widths total tree graph)))
+
+(defun obsidian--capture-window-ratios (tree-window graph-window total)
+  "Capture TREE-WINDOW and GRAPH-WINDOW widths relative to TOTAL."
+  (setq obsidian--saved-tree-ratio
+        (/ (float (window-body-width tree-window)) total)
+        obsidian--saved-graph-ratio
+        (/ (float (window-body-width graph-window)) total)))
+
 (defun obsidian--setup-windows ()
   "Create a three-window layout that fits the current frame."
   (delete-other-windows)
   (let* ((total (window-total-width))
-         (requested-tree (or obsidian--saved-tree-width obsidian-tree-width))
-         (requested-graph (or obsidian--saved-graph-width obsidian-graph-width))
-         (fitted (obsidian--fit-panel-widths
-                  total requested-tree requested-graph))
+         (had-saved-ratios (and obsidian--saved-tree-ratio
+                                obsidian--saved-graph-ratio))
+         (fitted (obsidian--requested-panel-widths total))
          (tree-width (car fitted))
          (graph-width (cdr fitted))
+         (obsidian--resizing-windows t)
          left-win center-win right-win)
     (setq right-win (split-window-right (- graph-width)))
     (setq left-win (split-window nil tree-width 'left))
@@ -238,6 +263,10 @@ limits.  If necessary, both panels shrink in roughly the same proportion."
     ;; columns.  Correct both panels after all three windows exist.
     (obsidian--restore-body-width right-win graph-width)
     (obsidian--restore-body-width left-win tree-width)
+    ;; Convert a legacy absolute-width file into ratios after its first
+    ;; successful layout.  A v2 ratio file remains stable across frame sizes.
+    (unless had-saved-ratios
+      (obsidian--capture-window-ratios left-win right-win total))
     (select-window center-win)))
 
 (defun obsidian--editor-window ()
@@ -260,32 +289,62 @@ limits.  If necessary, both panels shrink in roughly the same proportion."
 ;; Window resizing
 
 (defun obsidian--save-window-sizes ()
-  "Save current tree and graph window widths to file."
+  "Save current tree and graph proportions to file."
   (when obsidian-save-window-sizes
     (let ((tree-win (get-buffer-window obsidian-tree-buffer-name))
           (graph-win (get-buffer-window obsidian-graph-buffer-name)))
       (when (and (window-live-p tree-win) (window-live-p graph-win))
+        (let ((total (window-total-width
+                      (frame-root-window (window-frame tree-win)))))
+          (obsidian--capture-window-ratios tree-win graph-win total))
         (with-temp-file obsidian-window-sizes-file
-          (insert (format "%d %d\n"
-                          (window-body-width tree-win)
-                          (window-body-width graph-win))))))))
+          (insert (format "v2 %.8f %.8f\n"
+                          obsidian--saved-tree-ratio
+                          obsidian--saved-graph-ratio)))))))
 
 (defun obsidian--load-window-sizes ()
   "Load saved window sizes into internal variables."
   (setq obsidian--saved-tree-width nil
-        obsidian--saved-graph-width nil)
+        obsidian--saved-graph-width nil
+        obsidian--saved-tree-ratio nil
+        obsidian--saved-graph-ratio nil)
   (when (and obsidian-save-window-sizes
              (file-readable-p obsidian-window-sizes-file))
     (with-temp-buffer
       (insert-file-contents obsidian-window-sizes-file)
       (goto-char (point-min))
-      (when (looking-at "\\([0-9]+\\) \\([0-9]+\\)")
+      (cond
+       ;; Current format stores ratios and therefore survives frame resizing.
+       ((looking-at "v2[ \\t]+\\([0-9.]+\\)[ \\t]+\\([0-9.]+\\)")
+        (let ((tree-ratio (string-to-number (match-string 1)))
+              (graph-ratio (string-to-number (match-string 2))))
+          (when (and (> tree-ratio 0.0) (< tree-ratio 1.0)
+                     (> graph-ratio 0.0) (< graph-ratio 1.0)
+                     (< (+ tree-ratio graph-ratio) 1.0))
+            (setq obsidian--saved-tree-ratio tree-ratio
+                  obsidian--saved-graph-ratio graph-ratio))))
+       ;; Legacy format: absolute columns.  Setup converts these to v2 ratios.
+       ((looking-at "\\([0-9]+\\) \\([0-9]+\\)")
         (let ((tree-w (string-to-number (match-string 1)))
               (graph-w (string-to-number (match-string 2))))
-          (when (> tree-w 5)
-            (setq obsidian--saved-tree-width tree-w))
-          (when (> graph-w 5)
-            (setq obsidian--saved-graph-width graph-w)))))))
+          (when (> tree-w 5) (setq obsidian--saved-tree-width tree-w))
+          (when (> graph-w 5) (setq obsidian--saved-graph-width graph-w))))))))
+
+(defun obsidian--handle-frame-size-change (frame)
+  "Maintain saved pane proportions after a size change to FRAME."
+  (unless obsidian--resizing-windows
+    (let ((tree-win (get-buffer-window obsidian-tree-buffer-name frame))
+          (graph-win (get-buffer-window obsidian-graph-buffer-name frame)))
+      (when (and obsidian--saved-tree-ratio obsidian--saved-graph-ratio
+                 (window-live-p tree-win) (window-live-p graph-win))
+        (let* ((obsidian--resizing-windows t)
+               (total (window-total-width (frame-root-window frame)))
+               (widths (obsidian--requested-panel-widths total)))
+          (obsidian--restore-body-width graph-win (cdr widths))
+          (obsidian--restore-body-width tree-win (car widths))
+          ;; Rebuild the viewport at its new dimensions after resize events
+          ;; settle; repeated events are coalesced by the graph scheduler.
+          (obsidian--schedule-graph-update))))))
 
 (defun obsidian--resize-panel (window delta)
   "Resize WINDOW horizontally by DELTA and persist panel widths."
@@ -317,6 +376,7 @@ limits.  If necessary, both panels shrink in roughly the same proportion."
 ;; Save sizes even when the user closes Emacs without explicitly resizing at
 ;; the end of the session.
 (add-hook 'kill-emacs-hook #'obsidian--save-window-sizes)
+(add-hook 'window-size-change-functions #'obsidian--handle-frame-size-change)
 
 (provide 'obsidian-windows)
 ;;; obsidian-windows.el ends here

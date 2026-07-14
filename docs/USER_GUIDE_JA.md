@@ -244,6 +244,8 @@ M-x customize-group RET obsidian RET
 | `obsidian-timestamp-format` | 日時の書式 |
 | `obsidian-save-window-sizes` | パネル幅を次回起動用に保存するか |
 
+パネル幅は絶対的な列数ではなく、ワークスペース全体に対する比率として保存されます。Emacsのフレーム幅を変更すると、左・中央・右の比率を保ったまま自動的に追従します。古い`20 73`形式の設定ファイルも初回だけ読み込まれ、その後は`v2`比率形式へ移行します。
+
 設定を`init.el`へ直接書く例です。
 
 ```elisp
