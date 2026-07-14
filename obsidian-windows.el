@@ -137,18 +137,59 @@
 
 ;; Window setup
 
+(defconst obsidian--minimum-editor-width 20
+  "Minimum width reserved for the center editor pane.")
+
+(defconst obsidian--minimum-panel-width 10
+  "Minimum usable width for either side panel.")
+
+(defconst obsidian--window-divider-overhead 2
+  "Columns consumed by the two boundaries between three side-by-side panes.")
+
+(defun obsidian--fit-panel-widths (total tree-width graph-width)
+  "Fit TREE-WIDTH and GRAPH-WIDTH inside TOTAL frame columns.
+The requested values are returned unchanged whenever the center editor can
+retain `obsidian--minimum-editor-width'.  Otherwise, both panels shrink in
+roughly the same proportion."
+  (let* ((available (max (* 2 obsidian--minimum-panel-width)
+                         (- total obsidian--minimum-editor-width
+                            obsidian--window-divider-overhead)))
+         (tree (max obsidian--minimum-panel-width tree-width))
+         (graph (max obsidian--minimum-panel-width graph-width))
+         (requested (+ tree graph)))
+    (if (<= requested available)
+        (cons tree graph)
+      (let* ((ratio (/ (float available) requested))
+             (fitted-tree
+              (max obsidian--minimum-panel-width (floor (* tree ratio))))
+             (fitted-graph
+              (max obsidian--minimum-panel-width (- available fitted-tree))))
+        ;; If the graph minimum pushed the sum over AVAILABLE, take the excess
+        ;; back from the tree while respecting its minimum.
+        (when (> (+ fitted-tree fitted-graph) available)
+          (setq fitted-tree
+                (max obsidian--minimum-panel-width
+                     (- available fitted-graph))))
+        (cons fitted-tree fitted-graph)))))
+
+(defun obsidian--restore-body-width (window desired-width)
+  "Resize WINDOW until its body is DESIRED-WIDTH columns when possible."
+  (let ((delta (- desired-width (window-body-width window))))
+    (unless (zerop delta)
+      ;; Decorations and fringes make split sizes differ from body sizes in
+      ;; graphical frames.  `window-resize' corrects that final difference.
+      (ignore-errors (window-resize window delta t)))))
+
 (defun obsidian--setup-windows ()
   "Create a three-window layout that fits the current frame."
   (delete-other-windows)
   (let* ((total (window-total-width))
-         ;; Reserve at least 20 columns for editing, then share the rest.
-         (side-limit (max 10 (/ (- total 20) 2)))
-         (tree-width (max 10 (min side-limit
-                                  (or obsidian--saved-tree-width
-                                      obsidian-tree-width))))
-         (graph-width (max 10 (min side-limit
-                                   (or obsidian--saved-graph-width
-                                       obsidian-graph-width))))
+         (requested-tree (or obsidian--saved-tree-width obsidian-tree-width))
+         (requested-graph (or obsidian--saved-graph-width obsidian-graph-width))
+         (fitted (obsidian--fit-panel-widths
+                  total requested-tree requested-graph))
+         (tree-width (car fitted))
+         (graph-width (cdr fitted))
          left-win center-win right-win)
     (setq right-win (split-window-right (- graph-width)))
     (setq left-win (split-window nil tree-width 'left))
@@ -173,6 +214,10 @@
         (read-only-mode 1)
         (obsidian-editor-mode 1))
       (set-window-buffer center-win buf))
+    ;; Split sizes use total columns, while the persistence file stores body
+    ;; columns.  Correct both panels after all three windows exist.
+    (obsidian--restore-body-width right-win graph-width)
+    (obsidian--restore-body-width left-win tree-width)
     (select-window center-win)))
 
 (defun obsidian--editor-window ()

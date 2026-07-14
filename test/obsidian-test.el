@@ -121,6 +121,15 @@
                         (overlay-start overlay) (overlay-end overlay))))
         (should (equal "e⁽ⁱπ⁾+1=0" (overlay-get overlay 'display)))))))
 
+(ert-deftest obsidian-window-widths-remain-asymmetric-when-they-fit ()
+  (should (equal '(25 . 73) (obsidian--fit-panel-widths 160 25 73))))
+
+(ert-deftest obsidian-window-widths-shrink-proportionally-when-needed ()
+  (let ((widths (obsidian--fit-panel-widths 100 25 73)))
+    (should (= 78 (+ (car widths) (cdr widths))))
+    (should (> (cdr widths) (car widths)))
+    (should (>= (car widths) obsidian--minimum-panel-width))))
+
 (ert-deftest obsidian-arrow-pan-moves-camera-not-point ()
   (with-temp-buffer
     (obsidian-graph-mode)
