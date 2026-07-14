@@ -82,6 +82,25 @@
     (should-not (string-match-p "[╱╲/\\\\]" text))
     (should (string-match-p "[┌┐└┘]" text))))
 
+(ert-deftest obsidian-japanese-labels-preserve-canvas-column-width ()
+  (let* ((nodes '("技術" "HumanDigitalTwin" "考察した要素"))
+         (edges '(("技術" . "HumanDigitalTwin")
+                  ("技術" . "考察した要素")))
+         (positions '(("技術" . (3 . 4))
+                      ("HumanDigitalTwin" . (25 . 4))
+                      ("考察した要素" . (15 . 1))))
+         (canvas (obsidian--render-canvas
+                  nodes edges positions 50 8 "技術")))
+    (dotimes (row (length canvas))
+      (should (= 50 (string-width (aref canvas row)))))
+    (should (string-match-p "◆ 技術" (aref canvas 4)))
+    (should (string-match-p "● 考察した要素" (aref canvas 1)))))
+
+(ert-deftest obsidian-camera-slices-by-display-columns ()
+  (let ((line "1234● 技術────● target"))
+    (should (= 12 (string-width
+                   (obsidian--display-column-slice line 4 12))))))
+
 (ert-deftest obsidian-note-path-cannot-escape-vault ()
   (let ((obsidian--vault obsidian-test--vault))
     (should-error (obsidian--safe-note-path "../../outside" obsidian-test--vault)

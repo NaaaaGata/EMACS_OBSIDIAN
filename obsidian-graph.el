@@ -241,6 +241,28 @@ The destination measures TARGET-WIDTH by TARGET-HEIGHT."
 
 ;;; Canvas rendering
 
+(defun obsidian--node-label (node current)
+  "Return the visible label for NODE, marking CURRENT specially."
+  (format "%s %s" (if (equal node current) "◆" "●") node))
+
+(defun obsidian--replace-display-columns (line column replacement)
+  "Put REPLACEMENT into LINE at display COLUMN.
+LINE contains only single-column canvas glyphs before replacement.  The
+returned string preserves LINE's original display width even when REPLACEMENT
+contains Japanese or other double-width characters."
+  (let* ((available (max 0 (- (string-width line) column)))
+         (visible (truncate-string-to-width replacement available nil nil ""))
+         (end-column (min (string-width line)
+                          (+ column (string-width visible)))))
+    (concat (substring line 0 column)
+            visible
+            (substring line end-column))))
+
+(defun obsidian--display-column-slice (line start width)
+  "Return WIDTH display columns of LINE beginning at display column START."
+  ;; END-COLUMN is absolute, not a length, in `truncate-string-to-width'.
+  (truncate-string-to-width line (+ start width) start nil ""))
+
 ;; Each edge cell stores a four-bit connection mask.  Combining masks before
 ;; choosing a glyph gives correct corners and junctions without // or \\
 ;; staircases.  Bits are north=1, east=2, south=4, west=8.
@@ -329,8 +351,10 @@ CURRENT names the active node."
     ;; so connections visibly reach ●/◆ instead of stopping several cells away.
     (dolist (node nodes)
       (let* ((p (cdr (assoc node positions))) (x (car p)) (y (cdr p))
-             (label (format "%s %s" (if (equal node current) "◆" "●") node)))
-        (cl-loop for xx from (+ x 2)
+             (label (obsidian--node-label node current))
+             (text-offset (string-width
+                           (substring label 0 (min 2 (length label))))))
+        (cl-loop for xx from (+ x text-offset)
                  to (min (1- width) (+ x (string-width label))) do
                  (puthash (cons xx y) t blocked))))
     ;; Route edges at right angles.  Of the two possible L-shaped routes, use
@@ -354,7 +378,7 @@ CURRENT names the active node."
       ;; Labels are always the top layer.
       (dolist (node nodes)
         (let* ((p (cdr (assoc node positions))) (x (car p)) (y (cdr p))
-               (label (format "%s %s" (if (equal node current) "◆" "●") node))
+               (label (obsidian--node-label node current))
                (face (cond ((equal node current) 'obsidian-graph-current)
                            ((member node connected) 'obsidian-graph-connected)
                            ((cl-some (lambda (edge)
@@ -362,13 +386,17 @@ CURRENT names the active node."
                                            (equal node (cdr edge)))) edges)
                             'obsidian-graph-edge)
                            (t 'obsidian-graph-unlinked)))
-               (line (aref canvas y)) (end (min width (+ x (length label))))
-               (visible (substring label 0 (- end x))))
-          (setq line (concat (substring line 0 x) visible (substring line end)))
+               (line (aref canvas y))
+               (visible (truncate-string-to-width label (- width x) nil nil "")))
+          ;; Add properties before insertion so offsets are ordinary string
+          ;; indices, while placement remains based on terminal display cells.
           (add-text-properties
-           x end `(face ,face mouse-face highlight help-echo "Open this note"
-                        obsidian-node ,node keymap ,obsidian-graph-mode-map) line)
-          (aset canvas y line)))
+           0 (length visible)
+           `(face ,face mouse-face highlight help-echo "Open this note"
+                  obsidian-node ,node keymap ,obsidian-graph-mode-map)
+           visible)
+          (aset canvas y
+                (obsidian--replace-display-columns line x visible))))
       canvas)))
 
 (defun obsidian--canvas-as-string (canvas)
@@ -415,10 +443,10 @@ CURRENT names the active node."
         (let ((source-row (+ obsidian--graph-camera-y row)))
           (if (>= source-row obsidian--graph-canvas-height)
               (insert "\n")
-            (let* ((line (aref obsidian--graph-canvas source-row))
-                   (start (min obsidian--graph-camera-x (length line)))
-                   (end (min (length line) (+ start (car view)))))
-              (insert (substring line start end) "\n")))))
+            (let ((line (aref obsidian--graph-canvas source-row)))
+              (insert (obsidian--display-column-slice
+                       line obsidian--graph-camera-x (car view))
+                      "\n")))))
       (goto-char (point-min))
       (set-buffer-modified-p nil))))
 
