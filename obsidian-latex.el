@@ -41,31 +41,100 @@ When nil, a simple ASCII fallback is used."
   (obsidian--remove-latex-overlays)
   (save-excursion
     (goto-char (point-min))
-    (while (re-search-forward "\\$\\$\\(.\\|\n\\)*?\\$\\$" nil t)
-      (obsidian--make-latex-overlay (match-beginning 0) (match-end 0) t))
+    (while (re-search-forward "\\$\\$\\(\\(?:.\\|\n\\)*?\\)\\$\\$" nil t)
+      (obsidian--make-latex-overlay (match-beginning 0) (match-end 0) t
+                                    (match-string-no-properties 1)))
     (goto-char (point-min))
-    (while (re-search-forward "\\([^$]\\|^\\)\\$\\([^$\n]*?\\)\\$" nil t)
-      (let ((b (1+ (match-beginning 2)))
-            (e (match-end 2)))
-        (when (> e b)
-          (obsidian--make-latex-overlay (match-beginning 0) (match-end 0) nil))))))
+    ;; Group 1 is exactly the $...$ fragment; the non-dollar prefix is only a
+    ;; boundary assertion and must never disappear under the overlay.
+    (while (re-search-forward
+            "\\(?:^\\|[^$]\\)\\(\\$\\([^$\n]+\\)\\$\\)" nil t)
+      (obsidian--make-latex-overlay (match-beginning 1) (match-end 1) nil
+                                    (match-string-no-properties 2)))))
 
-(defun obsidian--make-latex-overlay (start end display-p)
+(defun obsidian--make-latex-overlay (start end display-p &optional math)
   "Make a LaTeX overlay from START to END.
-DISPLAY-P means render a display equation rather than inline math."
+DISPLAY-P means render a display equation rather than inline math.
+MATH, when non-nil, is the already extracted expression."
   (let* ((text (buffer-substring-no-properties start end))
-         (clean (string-trim (replace-regexp-in-string
-                              "\\`\\$+\\|\\$+\\'" "" text)))
+         (clean (or math
+                    (string-trim (replace-regexp-in-string
+                                  "\\`\\$+\\|\\$+\\'" "" text))))
          (image (obsidian--render-latex clean display-p))
          (ov (make-overlay start end)))
     (if image
         (overlay-put ov 'display image)
-      (overlay-put ov 'face '(:background "gray20" :foreground "yellow"))
-      (overlay-put ov 'after-string
-                   (propertize (format " [%s] " clean)
-                               'face '(:foreground "yellow"))))
+      ;; Text terminals and machines without TeX still get a single readable
+      ;; mathematical rendering instead of yellow duplicated source text.
+      (overlay-put ov 'display
+                   (propertize (obsidian--latex-to-unicode clean)
+                               'face 'font-lock-constant-face)))
+    (overlay-put ov 'help-echo
+                 (if image "LaTeX image preview" "Unicode math preview"))
     (overlay-put ov 'obsidian-latex t)
     (push ov obsidian--latex-overlays)))
+
+(defconst obsidian--latex-unicode-replacements
+  '(("\\\\alpha" . "α") ("\\\\beta" . "β") ("\\\\gamma" . "γ")
+    ("\\\\delta" . "δ") ("\\\\theta" . "θ") ("\\\\lambda" . "λ")
+    ("\\\\mu" . "μ") ("\\\\pi" . "π") ("\\\\sigma" . "σ")
+    ("\\\\phi" . "φ") ("\\\\omega" . "ω") ("\\\\Gamma" . "Γ")
+    ("\\\\Delta" . "Δ") ("\\\\Theta" . "Θ") ("\\\\Lambda" . "Λ")
+    ("\\\\Pi" . "Π") ("\\\\Sigma" . "Σ") ("\\\\Phi" . "Φ")
+    ("\\\\Omega" . "Ω") ("\\\\infty" . "∞") ("\\\\sum" . "∑")
+    ("\\\\prod" . "∏") ("\\\\int" . "∫") ("\\\\sqrt" . "√")
+    ("\\\\times" . "×") ("\\\\cdot" . "·") ("\\\\pm" . "±")
+    ("\\\\leq" . "≤") ("\\\\geq" . "≥") ("\\\\neq" . "≠")
+    ("\\\\to" . "→") ("\\\\rightarrow" . "→")
+    ("\\\\leftarrow" . "←"))
+  "Common LaTeX commands and their Unicode text equivalents.")
+
+(defconst obsidian--superscript-characters
+  '((?0 . ?⁰) (?1 . ?¹) (?2 . ?²) (?3 . ?³) (?4 . ?⁴)
+    (?5 . ?⁵) (?6 . ?⁶) (?7 . ?⁷) (?8 . ?⁸) (?9 . ?⁹)
+    (?+ . ?⁺) (?- . ?⁻) (?= . ?⁼) (?\( . ?⁽) (?\) . ?⁾)
+    (?i . ?ⁱ) (?n . ?ⁿ))
+  "Characters with standard Unicode superscript forms.")
+
+(defconst obsidian--subscript-characters
+  '((?0 . ?₀) (?1 . ?₁) (?2 . ?₂) (?3 . ?₃) (?4 . ?₄)
+    (?5 . ?₅) (?6 . ?₆) (?7 . ?₇) (?8 . ?₈) (?9 . ?₉)
+    (?+ . ?₊) (?- . ?₋) (?= . ?₌) (?\( . ?₍) (?\) . ?₎))
+  "Characters with standard Unicode subscript forms.")
+
+(defun obsidian--script-string (text table open close)
+  "Convert TEXT using TABLE, surrounding it with OPEN and CLOSE."
+  (concat open
+          (mapconcat (lambda (character)
+                       (char-to-string (or (cdr (assq character table))
+                                           character)))
+                     text "")
+          close))
+
+(defun obsidian--latex-to-unicode (math)
+  "Return a readable Unicode approximation of LaTeX MATH."
+  (let ((result math))
+    (dolist (replacement obsidian--latex-unicode-replacements)
+      (setq result (replace-regexp-in-string
+                    (car replacement) (cdr replacement) result t t)))
+    ;; Handle the most useful structural constructs without pretending to be
+    ;; a complete TeX parser.
+    (while (string-match "\\\\frac{\\([^{}]+\\)}{\\([^{}]+\\)}" result)
+      (setq result (replace-match "(\\1)/(\\2)" t nil result)))
+    (while (string-match "\\^{\\([^{}]+\\)}" result)
+      (setq result
+            (replace-match
+             (obsidian--script-string (match-string 1 result)
+                                      obsidian--superscript-characters "⁽" "⁾")
+             t t result)))
+    (while (string-match "_{\\([^{}]+\\)}" result)
+      (setq result
+            (replace-match
+             (obsidian--script-string (match-string 1 result)
+                                      obsidian--subscript-characters "₍" "₎")
+             t t result)))
+    (setq result (replace-regexp-in-string "[{}]" "" result))
+    result))
 
 (defun obsidian--render-latex (math display-p)
   "Render MATH into a PNG image, or nil if unavailable.

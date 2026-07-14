@@ -104,6 +104,23 @@
           (should (file-exists-p opened)))
       (delete-directory vault t))))
 
+(ert-deftest obsidian-unicode-math-fallback-is-readable ()
+  (should (equal "e⁽ⁱπ⁾+1=0"
+                 (obsidian--latex-to-unicode "e^{i\\pi}+1=0"))))
+
+(ert-deftest obsidian-inline-math-overlay-does-not-hide-prefix ()
+  (with-temp-buffer
+    (insert "公式は $e^{i\\pi}+1=0$ です。")
+    (let ((obsidian-latex-command nil)
+          (obsidian-dvipng-command nil))
+      (obsidian--show-latex-preview)
+      (should (= 1 (length obsidian--latex-overlays)))
+      (let ((overlay (car obsidian--latex-overlays)))
+        (should (equal "$e^{i\\pi}+1=0$"
+                       (buffer-substring-no-properties
+                        (overlay-start overlay) (overlay-end overlay))))
+        (should (equal "e⁽ⁱπ⁾+1=0" (overlay-get overlay 'display)))))))
+
 (ert-deftest obsidian-arrow-pan-moves-camera-not-point ()
   (with-temp-buffer
     (obsidian-graph-mode)

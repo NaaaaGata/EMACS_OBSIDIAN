@@ -228,6 +228,17 @@
           (cl-incf radius))))
     result))
 
+(defun obsidian--center-positions (positions source-width source-height
+                                             target-width target-height)
+  "Center POSITIONS from SOURCE-WIDTH by SOURCE-HEIGHT.
+The destination measures TARGET-WIDTH by TARGET-HEIGHT."
+  (let ((dx (max 0 (/ (- target-width source-width) 2)))
+        (dy (max 0 (/ (- target-height source-height) 2))))
+    (mapcar (lambda (entry)
+              (cons (car entry)
+                    (cons (+ dx (cadr entry)) (+ dy (cddr entry)))))
+            positions)))
+
 ;;; Canvas rendering
 
 ;; Each edge cell stores a four-bit connection mask.  Combining masks before
@@ -466,11 +477,20 @@ CURRENT names the active node."
              (height (if compact
                          (cdr view)
                        (max (cdr view) (* 3 (length nodes)))))
+             ;; A wider panel should reveal whitespace, not stretch every
+             ;; connection.  Small graphs stay in a compact central cluster.
+             (layout-width (if compact (min width 48) width))
+             (layout-height (if compact (min height 22) height))
              (current (and obsidian--current-file
                            (file-name-base obsidian--current-file))))
         (setq obsidian--graph-points nil)
         (if nodes
-            (let ((positions (obsidian--force-layout nodes edges width height)))
+            (let* ((raw-positions
+                    (obsidian--force-layout nodes edges
+                                            layout-width layout-height))
+                   (positions
+                    (obsidian--center-positions
+                     raw-positions layout-width layout-height width height)))
               (setq obsidian--graph-canvas-width width
                     obsidian--graph-canvas-height height
                     obsidian--graph-current-position (cdr (assoc current positions))
