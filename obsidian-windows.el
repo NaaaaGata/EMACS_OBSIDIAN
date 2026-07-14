@@ -51,6 +51,18 @@
   "Width (in characters) of the file tree window."
   :type 'integer :group 'obsidian)
 
+(defcustom obsidian-editor-minimum-fraction 0.35
+  "Minimum fraction of frame width reserved for the center editor."
+  :type 'float :group 'obsidian)
+
+(defcustom obsidian-tree-maximum-fraction 0.30
+  "Maximum fraction of frame width used by the tree panel."
+  :type 'float :group 'obsidian)
+
+(defcustom obsidian-graph-maximum-fraction 0.45
+  "Maximum fraction of frame width used by the graph panel."
+  :type 'float :group 'obsidian)
+
 (defcustom obsidian-save-window-sizes t
   "If non-nil, window sizes are saved and restored on next launch."
   :type 'boolean :group 'obsidian)
@@ -148,14 +160,22 @@
 
 (defun obsidian--fit-panel-widths (total tree-width graph-width)
   "Fit TREE-WIDTH and GRAPH-WIDTH inside TOTAL frame columns.
-The requested values are returned unchanged whenever the center editor can
-retain `obsidian--minimum-editor-width'.  Otherwise, both panels shrink in
-roughly the same proportion."
-  (let* ((available (max (* 2 obsidian--minimum-panel-width)
-                         (- total obsidian--minimum-editor-width
+Saved widths are treated as preferences, subject to the configured responsive
+limits.  If necessary, both panels shrink in roughly the same proportion."
+  (let* ((editor-reserve
+          (max obsidian--minimum-editor-width
+               (ceiling (* total obsidian-editor-minimum-fraction))))
+         (available (max (* 2 obsidian--minimum-panel-width)
+                         (- total editor-reserve
                             obsidian--window-divider-overhead)))
-         (tree (max obsidian--minimum-panel-width tree-width))
-         (graph (max obsidian--minimum-panel-width graph-width))
+         (tree-limit (max obsidian--minimum-panel-width
+                          (floor (* total obsidian-tree-maximum-fraction))))
+         (graph-limit (max obsidian--minimum-panel-width
+                           (floor (* total obsidian-graph-maximum-fraction))))
+         (tree (max obsidian--minimum-panel-width
+                    (min tree-limit tree-width)))
+         (graph (max obsidian--minimum-panel-width
+                     (min graph-limit graph-width)))
          (requested (+ tree graph)))
     (if (<= requested available)
         (cons tree graph)

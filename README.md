@@ -88,6 +88,9 @@ Emacs 内で Obsidian のような Markdown ノート環境を使うパッケー
 - `obsidian-vault-directory`
 - `obsidian-tree-width`
 - `obsidian-graph-width`
+- `obsidian-editor-minimum-fraction`
+- `obsidian-tree-maximum-fraction`
+- `obsidian-graph-maximum-fraction`
 - `obsidian-graph-max-nodes`
 - `obsidian-auto-timestamp`
 - `obsidian-timestamp-format`

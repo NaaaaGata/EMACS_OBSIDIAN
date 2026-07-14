@@ -236,6 +236,9 @@ M-x customize-group RET obsidian RET
 | `obsidian-vault-directory` | 通常開くVault |
 | `obsidian-tree-width` | 左パネルの初期幅 |
 | `obsidian-graph-width` | 右パネルの初期幅 |
+| `obsidian-editor-minimum-fraction` | 中央編集領域へ確保する画面幅の割合（既定35%） |
+| `obsidian-tree-maximum-fraction` | 左パネルが使用できる最大割合（既定30%） |
+| `obsidian-graph-maximum-fraction` | 右パネルが使用できる最大割合（既定45%） |
 | `obsidian-graph-max-nodes` | グラフに表示する最大ノート数 |
 | `obsidian-auto-timestamp` | 新規ノートへ日時を挿入するか |
 | `obsidian-timestamp-format` | 日時の書式 |
