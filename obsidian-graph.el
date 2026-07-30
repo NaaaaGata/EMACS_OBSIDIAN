@@ -26,6 +26,14 @@
   "Maximum number of nodes drawn in the graph view."
   :type 'integer :group 'obsidian)
 
+(defcustom obsidian-graph-cluster-column-spacing 10
+  "Approximate horizontal spacing used by compact graph clusters."
+  :type 'integer :group 'obsidian)
+
+(defcustom obsidian-graph-cluster-row-spacing 4
+  "Approximate vertical spacing used by compact graph clusters."
+  :type 'integer :group 'obsidian)
+
 (defface obsidian-graph-current
   '((t :foreground "#ff5f5f" :weight bold))
   "Face for the current note." :group 'obsidian)
@@ -185,25 +193,45 @@
     (obsidian--quantize-positions nodes positions width height)))
 
 (defun obsidian--quantize-positions (nodes positions width height)
-  "Scale NODES in POSITIONS to WIDTH by HEIGHT without label crowding."
+  "Place NODES from POSITIONS in a compact cluster inside WIDTH by HEIGHT.
+The old renderer normalized every graph to the complete canvas.  That made a
+small chain span the whole panel, even when its force-directed positions were
+already close.  This version caps the target span according to node count and
+centers the result; it scales down to fit but never stretches a small graph
+merely to consume whitespace."
   (let* ((values (mapcar (lambda (node) (gethash node positions)) nodes))
          (xmin (apply #'min (mapcar #'car values)))
          (xmax (apply #'max (mapcar #'car values)))
          (ymin (apply #'min (mapcar #'cdr values)))
          (ymax (apply #'max (mapcar #'cdr values)))
-         (margin-x 2) (margin-y 2) occupied result)
+         (margin-x 2) (margin-y 2)
+         (max-label-width
+          (apply #'max (mapcar (lambda (node) (+ 2 (string-width node)))
+                               nodes)))
+         (available-x (max 1 (- width max-label-width (* 2 margin-x))))
+         (available-y (max 1 (- height 1 (* 2 margin-y))))
+         (root-count (sqrt (max 1.0 (float (length nodes)))))
+         (target-x-span
+          (min available-x
+               (max 1 (round (* obsidian-graph-cluster-column-spacing
+                                root-count)))))
+         (target-y-span
+          (min available-y
+               (max 1 (round (* obsidian-graph-cluster-row-spacing
+                                root-count)))))
+         (origin-x (+ margin-x (/ (- available-x target-x-span) 2)))
+         (origin-y (+ margin-y (/ (- available-y target-y-span) 2)))
+         occupied result)
     (dolist (node nodes)
       (let* ((p (gethash node positions))
              ;; Obsidian hides the Markdown extension in graph labels.
              (label-width (+ 2 (string-width node)))
-             (usable-x (max 1 (- width label-width (* 2 margin-x))))
-             (usable-y (max 1 (- height (* 2 margin-y))))
-             (x (+ margin-x
+             (x (+ origin-x
                    (round (* (/ (- (car p) xmin) (max 0.01 (- xmax xmin)))
-                             usable-x))))
-             (y (+ margin-y
+                             target-x-span))))
+             (y (+ origin-y
                    (round (* (/ (- (cdr p) ymin) (max 0.01 (- ymax ymin)))
-                             usable-y))))
+                             target-y-span))))
              (radius 0) found)
         (while (not found)
           (cl-loop for dy from (- radius) to radius until found do
@@ -414,8 +442,13 @@ CURRENT names the active node."
 (defun obsidian--graph-viewport-size ()
   "Return usable graph viewport size."
   (let ((window (get-buffer-window (current-buffer))))
-    (cons (max 20 (if window (window-body-width window) obsidian-graph-width))
-          (max 6 (- (if window (window-body-height window) 24) 2)))))
+    ;; Reserve one physical column.  On terminal frames a line occupying the
+    ;; exact text width can be treated as continued; subsequent redisplay then
+    ;; shifts graph rows and may paint across the adjacent pane.
+    (cons (max 1 (1- (if window
+                         (window-body-width window)
+                       obsidian-graph-width)))
+          (max 1 (- (if window (window-body-height window) 24) 2)))))
 
 (defun obsidian--graph-clamp-camera ()
   "Keep camera coordinates inside the virtual canvas."
@@ -434,11 +467,15 @@ CURRENT names the active node."
     (let* ((inhibit-read-only t) (view (obsidian--graph-viewport-size))
            (scope (file-relative-name obsidian--current-scope obsidian--vault)))
       (erase-buffer)
-      (insert (propertize
-               (format "Graph: %s  view(%d,%d)  arrows: move  0: center\n"
-                       (if (equal scope "./") "vault root" scope)
-                       obsidian--graph-camera-x obsidian--graph-camera-y)
-               'face 'bold))
+      (insert
+       (propertize
+        (truncate-string-to-width
+         (format "Graph: %s  view(%d,%d)  arrows: move  0: center"
+                 (if (equal scope "./") "vault root" scope)
+                 obsidian--graph-camera-x obsidian--graph-camera-y)
+         (car view) nil nil "")
+        'face 'bold)
+       "\n")
       (dotimes (row (cdr view))
         (let ((source-row (+ obsidian--graph-camera-y row)))
           (if (>= source-row obsidian--graph-canvas-height)

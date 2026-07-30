@@ -45,6 +45,10 @@
         (setq-local truncate-lines nil)
         (setq-local truncate-partial-width-windows nil)
         (visual-line-mode 1)
+        ;; Be explicit even if another mode changed these after enabling
+        ;; visual-line-mode.  Long unbroken input must remain inside the
+        ;; editor's text area on both GUI and terminal frames.
+        (setq-local word-wrap t)
         ;; Buffer-local registration avoids running Obsidian work after every
         ;; save in unrelated Emacs buffers.
         (add-hook 'after-save-hook #'obsidian--after-save nil t)
