@@ -111,6 +111,93 @@
     (should (= 12 (string-width
                    (obsidian--display-column-slice line 4 12))))))
 
+(ert-deftest obsidian-tree-marquee-scrolls-wide-japanese-labels ()
+  (let* ((name "とても長いプロフィール作成.md")
+         (first (obsidian--tree-marquee-text name 12 0))
+         (second (obsidian--tree-marquee-text name 12 1)))
+    (should (<= (string-width first) 12))
+    (should (<= (string-width second) 12))
+    (should-not (equal first second))
+    ;; Advancing by characters keeps the first visible Japanese glyph whole.
+    (should (equal (substring second 0 1) "て"))))
+
+(ert-deftest obsidian-tree-entry-retains-visible-name-and-full-path ()
+  (with-temp-buffer
+    (let ((file "/tmp/a-very-long-note-name.md"))
+      (obsidian--tree-insert-entry
+       "  " "a-very-long-note-name" ""
+       'obsidian-tree-file file "Open")
+      (should (equal "a-very-long-note-name"
+                     (get-text-property (point-min) 'obsidian-tree-name)))
+      (should (equal file
+                     (get-text-property (+ (point-min) 3) 'obsidian-path))))))
+
+(ert-deftest obsidian-tree-nests-each-level-by-one-column ()
+  (let* ((vault (make-temp-file "obsidian-tree-indent-" t))
+         (folder (expand-file-name "folder" vault))
+         (file (expand-file-name "note.md" folder))
+         (expanded (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (make-directory folder)
+          (with-temp-file file (insert "# note\n"))
+          (puthash folder t expanded)
+          (with-temp-buffer
+            (obsidian--tree-insert vault 0 expanded)
+            (goto-char (point-min))
+            (should (looking-at "v folder/"))
+            (forward-line 1)
+            ;; The child label begins one column to the right of its parent.
+            (should (looking-at "   note$"))
+            (should-not (string-match-p
+                         "\\.md"
+                         (buffer-substring-no-properties
+                          (line-beginning-position) (line-end-position))))))
+      (delete-directory vault t))))
+
+(ert-deftest obsidian-tree-marquee-does-not-move-cursor ()
+  (save-window-excursion
+    (let ((buffer (generate-new-buffer " *obsidian-marquee-test*")))
+      (unwind-protect
+          (progn
+            (set-window-buffer (selected-window) buffer)
+            (with-current-buffer buffer
+              (obsidian--tree-insert-entry
+               "  " (make-string 100 ?x) "" 'obsidian-tree-file
+               "/tmp/long.md" "Open")
+              (insert "second line\n")
+              (goto-char (line-beginning-position 0))
+              (let ((before (point)))
+                (obsidian--tree-update-marquee)
+                (should (= before (point))))))
+        (kill-buffer buffer)))))
+
+(ert-deftest obsidian-graph-reserves-terminal-safety-column ()
+  (save-window-excursion
+    (let ((buffer (generate-new-buffer " *obsidian-viewport-test*")))
+      (unwind-protect
+          (progn
+            (set-window-buffer (selected-window) buffer)
+            (with-current-buffer buffer
+              (should (= (1- (window-body-width (selected-window)))
+                         (car (obsidian--graph-viewport-size))))))
+        (kill-buffer buffer)))))
+
+(ert-deftest obsidian-small-graph-remains-a-compact-cluster ()
+  (let* ((nodes '("プロフィール作成" "プロフィール交換"
+                  "abstract" "サービス内容"))
+         (edges '(("プロフィール作成" . "プロフィール交換")
+                  ("プロフィール交換" . "サービス内容")
+                  ("abstract" . "サービス内容")))
+         (positions (obsidian--force-layout nodes edges 48 22))
+         (profile (cdr (assoc "プロフィール作成" positions)))
+         (exchange (cdr (assoc "プロフィール交換" positions))))
+    ;; This direct edge used to be stretched to nearly the full 22-row
+    ;; canvas by min/max normalization.
+    (should (< (+ (abs (- (car profile) (car exchange)))
+                  (abs (- (cdr profile) (cdr exchange))))
+               16))))
+
 (ert-deftest obsidian-tree-escape-deletes-confirmed-note ()
   (let* ((directory (make-temp-file "obsidian-delete-test-" t))
          (file (expand-file-name "unused.md" directory))

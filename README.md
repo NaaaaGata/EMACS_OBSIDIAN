@@ -12,6 +12,7 @@ Emacs 内で Obsidian のような Markdown ノート環境を使うパッケー
 - 斥力・バネ引力・中心重力を使った force-directed グラフ
 - ラベルを保護し、Unicode罫線`─ │ ┌ ┐ └ ┘ ┼`で直交接続を描画
 - ツリー、Wiki リンク、グラフのファイル名をマウスで開く操作
+- 左ペインに収まらないファイル名を自動スクロール表示
 - 新規ノートへの作成日時の自動挿入
 - ツリー／グラフ幅の保存と復元
 - フレーム幅を変更しても3ペインの比率を自動維持
@@ -83,6 +84,8 @@ Emacs 内で Obsidian のような Markdown ノート環境を使うパッケー
 
 `◆ name` は現在のノート、`● name` はほかのノートです（`.md`は省略）。現在ノートは赤、直接接続されたノートは青、孤立ノートは灰色で表示されます。12ノード以下は右ペイン内へ自動フィットし、それより大きなグラフは矢印キーでゲームのマップのように移動できます。
 
+小規模グラフはノード数に応じた中央のコンパクトな領域へ配置されます。ペイン全体へ無理に引き伸ばさないため、直接リンクされたノート間の枝が必要以上に長くなりません。
+
 ## LaTeX
 
 `latex` と `dvipng` が PATH 上にあれば数式を画像表示します。見つからない場合は、`e^{i\\pi}`を`e⁽ⁱπ⁾`のような読みやすいUnicode数式へ変換して表示します。
@@ -98,6 +101,10 @@ Emacs 内で Obsidian のような Markdown ノート環境を使うパッケー
 - `obsidian-tree-maximum-fraction`
 - `obsidian-graph-maximum-fraction`
 - `obsidian-graph-max-nodes`
+- `obsidian-tree-marquee-interval`
+- `obsidian-tree-marquee-gap`
+- `obsidian-graph-cluster-column-spacing`
+- `obsidian-graph-cluster-row-spacing`
 - `obsidian-auto-timestamp`
 - `obsidian-timestamp-format`
 - `obsidian-save-window-sizes`
