@@ -48,6 +48,7 @@
 (require 'obsidian-editor)
 (require 'obsidian-graph)
 (require 'obsidian-latex)
+(require 'obsidian-git-sync)
 
 
 ;; Internal variables
@@ -88,6 +89,7 @@ Initial graph scope is set to the vault root."
     (setq obsidian--vault dir)
     (setq obsidian--current-file nil)
     (setq obsidian--current-scope dir)
+    (obsidian-git-auto-sync-mode 1)
     (obsidian--load-window-sizes)
     (obsidian--setup-windows)
     (obsidian--tree-refresh)
