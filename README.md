@@ -13,6 +13,7 @@ Emacs 内で Obsidian のような Markdown ノート環境を使うパッケー
 - ラベルを保護し、Unicode罫線`─ │ ┌ ┐ └ ┘ ┼`で直交接続を描画
 - ツリー、Wiki リンク、グラフのファイル名をマウスで開く操作
 - 左ペインに収まらないファイル名を自動スクロール表示
+- グラフの長いノート名を8文字枠で自動スクロール表示
 - 新規ノートへの作成日時の自動挿入
 - ツリー／グラフ幅の保存と復元
 - フレーム幅を変更しても3ペインの比率を自動維持
@@ -107,6 +108,9 @@ Emacs 内で Obsidian のような Markdown ノート環境を使うパッケー
 - `obsidian-tree-marquee-gap`
 - `obsidian-graph-cluster-column-spacing`
 - `obsidian-graph-cluster-row-spacing`
+- `obsidian-graph-label-max-characters`
+- `obsidian-graph-label-marquee-interval`
+- `obsidian-graph-label-marquee-gap`
 - `obsidian-auto-timestamp`
 - `obsidian-timestamp-format`
 - `obsidian-save-window-sizes`

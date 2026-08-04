@@ -222,6 +222,8 @@ music/drums
 
 12ノード以下のグラフは右パネル内へ自動的に収まります。13ノード以上では仮想キャンバスが広がり、矢印キーでゲームのマップ操作と同じようにカメラをパンできます。配置には斥力、リンク間のバネ引力、中央への弱い重力が使われます。小規模グラフはノード数に応じたコンパクトな中央領域へ配置され、キャンバス全体へ引き伸ばされないため、直接接続されたノート間の枝が必要以上に長くなりません。接続は読みにくい斜線を使わず、`─ │ ┌ ┐ └ ┘ ┼`の直交罫線で描画されます。ラベル文字を保護しつつ、線は`●`または`◆`の接続点まで届きます。
 
+長いノート名は既定で最大8文字の表示枠に収まり、左のVaultツリーと同じように自動スクロールします。表示が短くなっても、クリックや`RET`で開かれるノートは完全な元のファイル名で識別されます。
+
 ## 11. LaTeX数式
 
 インライン数式は`$`で囲みます。
@@ -263,6 +265,9 @@ M-x customize-group RET obsidian RET
 | `obsidian-tree-marquee-gap` | スクロール表示の末尾と先頭の間隔 |
 | `obsidian-graph-cluster-column-spacing` | 小規模グラフの横方向の配置間隔 |
 | `obsidian-graph-cluster-row-spacing` | 小規模グラフの縦方向の配置間隔 |
+| `obsidian-graph-label-max-characters` | グラフで同時に表示するノート名の最大文字数 |
+| `obsidian-graph-label-marquee-interval` | 長いグラフ名をスクロールする間隔（秒） |
+| `obsidian-graph-label-marquee-gap` | グラフ名の末尾と先頭の区切り |
 | `obsidian-auto-timestamp` | 新規ノートへ日時を挿入するか |
 | `obsidian-timestamp-format` | 日時の書式 |
 | `obsidian-save-window-sizes` | パネル幅を次回起動用に保存するか |
