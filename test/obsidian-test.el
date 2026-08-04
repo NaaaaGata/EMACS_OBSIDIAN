@@ -106,6 +106,83 @@
     (should (string-match-p "◆ 技術" (aref canvas 4)))
     (should (string-match-p "● 考察した要素" (aref canvas 1)))))
 
+(ert-deftest obsidian-multiple-labels-on-one-row-use-display-columns ()
+  (let* ((line (make-string 60 ?\s))
+         (first (propertize "● プロフィール交換"
+                           'obsidian-node "プロフィール交換"))
+         (with-first (obsidian--replace-display-columns line 6 first))
+         ;; At this point the display width is still 60, but the Japanese
+         ;; label makes the Lisp string only 52 characters long.  A second
+         ;; node beyond character index 52 used to raise `args-out-of-range'.
+         (with-second
+          (obsidian--replace-display-columns with-first 52 "● x")))
+    (should (= 60 (string-width with-second)))
+    (should (string-match-p "プロフィール交換" with-second))
+    (should (equal "プロフィール交換"
+                   (get-text-property 6 'obsidian-node with-second)))
+    (should (string-match-p "● x" with-second))))
+
+(ert-deftest obsidian-graph-long-labels-use-eight-character-marquee ()
+  (let* ((obsidian-graph-label-max-characters 8)
+         (obsidian-graph-label-marquee-gap " ")
+         (node "ライトユーザー向けプロフィール作成施策の調査")
+         (first (obsidian--graph-name-window node 0))
+         (second (obsidian--graph-name-window node 1))
+         (wrapped (obsidian--graph-name-window node (length node))))
+    (should (= 8 (length first)))
+    (should (= 8 (length second)))
+    (should-not (equal first second))
+    (should (string-prefix-p " " wrapped))))
+
+(ert-deftest obsidian-graph-marquee-preserves-full-click-target ()
+  (let* ((obsidian-graph-label-max-characters 8)
+         (node "ライトユーザー向けプロフィール作成施策の調査")
+         (obsidian--graph-marquee-step 0)
+         (label (obsidian--node-label node nil))
+         (obsidian--graph-canvas (vector label))
+         (before (get-text-property 2 'display label))
+         (rendered (obsidian--render-graph
+                    (list node) nil (list (cons node '(2 . 1)))
+                    30 4 nil)))
+    (setq obsidian--graph-marquee-step 1)
+    (obsidian--graph-apply-marquee-step)
+    (let ((after (get-text-property 2 'display
+                                    (aref obsidian--graph-canvas 0))))
+      (should-not (equal before after))
+      (should (= (string-width before) (string-width after)))
+      (should (equal node
+                     (get-text-property
+                      2 'obsidian-graph-marquee-name
+                      (aref obsidian--graph-canvas 0))))
+      (should (text-property-any
+               0 (length rendered) 'obsidian-node node rendered)))))
+
+(ert-deftest obsidian-long-graph-labels-do-not-collapse-layout-to-a-line ()
+  (let* ((obsidian-graph-label-max-characters 8)
+         (nodes '("プロフィール作成"
+                  "ライトユーザー向けの安易なプロフィール作成のための施策"
+                  "ライトユーザー向けプロフィール作成施策の調査"
+                  "AGENTS" "照合機能" "サービス内容"
+                  "abstruct" "マネタイズ"))
+         (edges '(("ライトユーザー向けプロフィール作成施策の調査"
+                   . "プロフィール作成")
+                  ("ライトユーザー向けプロフィール作成施策の調査"
+                   . "ライトユーザー向けの安易なプロフィール作成のための施策")
+                  ("ライトユーザー向けプロフィール作成施策の調査"
+                   . "照合機能")
+                  ("サービス内容" . "照合機能")
+                  ("サービス内容" . "abstruct")
+                  ("サービス内容" . "マネタイズ")
+                  ("AGENTS" . "照合機能")))
+         (positions (obsidian--force-layout nodes edges 48 22))
+         (x-values (delete-dups (mapcar #'cadr positions)))
+         (y-values (delete-dups (mapcar #'cddr positions))))
+    (should (<= (apply #'max
+                       (mapcar #'obsidian--graph-node-label-width nodes))
+                18))
+    (should (>= (length x-values) 4))
+    (should (>= (length y-values) 4))))
+
 (ert-deftest obsidian-camera-slices-by-display-columns ()
   (let ((line "1234● 技術────● target"))
     (should (= 12 (string-width

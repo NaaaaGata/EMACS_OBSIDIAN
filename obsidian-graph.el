@@ -34,6 +34,20 @@
   "Approximate vertical spacing used by compact graph clusters."
   :type 'integer :group 'obsidian)
 
+(defcustom obsidian-graph-label-max-characters 8
+  "Maximum number of note-name characters shown in a graph node."
+  :type 'integer :group 'obsidian)
+
+(defcustom obsidian-graph-label-marquee-interval 0.40
+  "Seconds between scrolling steps for long graph node names.
+Set this to nil to disable animated graph labels."
+  :type '(choice (const :tag "Disabled" nil) number)
+  :group 'obsidian)
+
+(defcustom obsidian-graph-label-marquee-gap " "
+  "Text separating the end and beginning of a scrolling graph label."
+  :type 'string :group 'obsidian)
+
 (defface obsidian-graph-current
   '((t :foreground "#ff5f5f" :weight bold))
   "Face for the current note." :group 'obsidian)
@@ -54,12 +68,17 @@
 (defvar-local obsidian--graph-canvas-width 0)
 (defvar-local obsidian--graph-canvas-height 0)
 (defvar-local obsidian--graph-current-position nil)
+(defvar-local obsidian--graph-marquee-timer nil
+  "Timer used to animate long graph node names.")
+(defvar-local obsidian--graph-marquee-step 0
+  "Current character offset of graph label marquees.")
 
 (define-derived-mode obsidian-graph-mode special-mode "Obsidian-Graph"
   "Major mode for a clickable, pannable text graph."
   (setq-local truncate-lines t)
   ;; The arrows control a camera, not a text cursor.
-  (setq-local cursor-type nil))
+  (setq-local cursor-type nil)
+  (add-hook 'kill-buffer-hook #'obsidian--graph-stop-marquee nil t))
 
 ;;; Notes and edges
 
@@ -206,8 +225,7 @@ merely to consume whitespace."
          (ymax (apply #'max (mapcar #'cdr values)))
          (margin-x 2) (margin-y 2)
          (max-label-width
-          (apply #'max (mapcar (lambda (node) (+ 2 (string-width node)))
-                               nodes)))
+          (apply #'max (mapcar #'obsidian--graph-node-label-width nodes)))
          (available-x (max 1 (- width max-label-width (* 2 margin-x))))
          (available-y (max 1 (- height 1 (* 2 margin-y))))
          (root-count (sqrt (max 1.0 (float (length nodes)))))
@@ -225,7 +243,7 @@ merely to consume whitespace."
     (dolist (node nodes)
       (let* ((p (gethash node positions))
              ;; Obsidian hides the Markdown extension in graph labels.
-             (label-width (+ 2 (string-width node)))
+             (label-width (obsidian--graph-node-label-width node))
              (x (+ origin-x
                    (round (* (/ (- (car p) xmin) (max 0.01 (- xmax xmin)))
                              target-x-span))))
@@ -288,22 +306,75 @@ The destination measures TARGET-WIDTH by TARGET-HEIGHT."
 
 ;;; Canvas rendering
 
+(defun obsidian--graph-name-window (node step)
+  "Return the visible character window of NODE at marquee STEP."
+  (let ((limit (max 1 obsidian-graph-label-max-characters)))
+    (if (<= (length node) limit)
+        node
+      (let* ((cycle (concat node obsidian-graph-label-marquee-gap))
+             (cycle-length (max 1 (length cycle)))
+             (offset (% step cycle-length))
+             (source (concat cycle cycle)))
+        (substring source offset (+ offset limit))))))
+
+(defun obsidian--graph-name-slot-width (node)
+  "Return a stable display width for every marquee window of NODE."
+  (if (<= (length node) (max 1 obsidian-graph-label-max-characters))
+      (string-width node)
+    (let* ((cycle-length
+            (length (concat node obsidian-graph-label-marquee-gap)))
+           (maximum 1)
+           (offset 0))
+      (while (< offset cycle-length)
+        (setq maximum
+              (max maximum
+                   (string-width
+                    (obsidian--graph-name-window node offset))))
+        (cl-incf offset))
+      maximum)))
+
+(defun obsidian--graph-padded-name-window (node step)
+  "Return NODE's marquee window at STEP padded to its stable slot width."
+  (let* ((visible (obsidian--graph-name-window node step))
+         (padding (- (obsidian--graph-name-slot-width node)
+                     (string-width visible))))
+    (concat visible (make-string (max 0 padding) ?\s))))
+
+(defun obsidian--graph-node-label-width (node)
+  "Return the fixed display width reserved for NODE and its marker."
+  (+ 2 (obsidian--graph-name-slot-width node)))
+
 (defun obsidian--node-label (node current)
   "Return the visible label for NODE, marking CURRENT specially."
-  (format "%s %s" (if (equal node current) "◆" "●") node))
+  (let ((marker (if (equal node current) "◆" "●")))
+    (if (<= (length node) (max 1 obsidian-graph-label-max-characters))
+        (format "%s %s" marker node)
+      (let* ((slot-width (obsidian--graph-name-slot-width node))
+             (placeholder (make-string slot-width ?\s)))
+        (add-text-properties
+         0 (length placeholder)
+         `(obsidian-graph-marquee-name ,node
+           display ,(obsidian--graph-padded-name-window
+                     node obsidian--graph-marquee-step))
+         placeholder)
+        (concat marker " " placeholder)))))
 
 (defun obsidian--replace-display-columns (line column replacement)
   "Put REPLACEMENT into LINE at display COLUMN.
-LINE contains only single-column canvas glyphs before replacement.  The
-returned string preserves LINE's original display width even when REPLACEMENT
-contains Japanese or other double-width characters."
+The returned string preserves LINE's original display width even when LINE or
+REPLACEMENT contains Japanese or other double-width characters."
   (let* ((available (max 0 (- (string-width line) column)))
          (visible (truncate-string-to-width replacement available nil nil ""))
          (end-column (min (string-width line)
                           (+ column (string-width visible)))))
-    (concat (substring line 0 column)
+    ;; COLUMN and END-COLUMN are terminal display columns, not Lisp string
+    ;; indices.  After one Japanese label has been inserted, `length' is less
+    ;; than `string-width'; using `substring' for a second label on that row
+    ;; therefore raises `args-out-of-range'.
+    (concat (truncate-string-to-width line column nil nil "")
             visible
-            (substring line end-column))))
+            (truncate-string-to-width
+             line (string-width line) end-column nil ""))))
 
 (defun obsidian--display-column-slice (line start width)
   "Return WIDTH display columns of LINE beginning at display column START."
@@ -456,6 +527,58 @@ CURRENT names the active node."
   (obsidian--canvas-as-string
    (obsidian--render-canvas nodes edges positions width height current)))
 
+(defun obsidian--graph-stop-marquee ()
+  "Stop the graph label marquee timer in the current buffer."
+  (when (timerp obsidian--graph-marquee-timer)
+    (cancel-timer obsidian--graph-marquee-timer))
+  (setq obsidian--graph-marquee-timer nil))
+
+(defun obsidian--graph-apply-marquee-step ()
+  "Apply the current marquee step to labels in the virtual canvas."
+  (when obsidian--graph-canvas
+    (dotimes (row (length obsidian--graph-canvas))
+      (let* ((line (aref obsidian--graph-canvas row))
+             (position 0)
+             (limit (length line)))
+        (while (< position limit)
+          (let* ((node (get-text-property
+                        position 'obsidian-graph-marquee-name line))
+                 (next (next-single-property-change
+                        position 'obsidian-graph-marquee-name line limit)))
+            (when node
+              (put-text-property
+               position next 'display
+               (obsidian--graph-padded-name-window
+                node obsidian--graph-marquee-step)
+               line))
+            (setq position next)))))))
+
+(defun obsidian--graph-marquee-tick (buffer)
+  "Advance scrolling node names in graph BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (get-buffer-window buffer t)
+        (cl-incf obsidian--graph-marquee-step)
+        (obsidian--graph-apply-marquee-step)
+        (obsidian--graph-draw-view)))))
+
+(defun obsidian--graph-start-marquee (nodes)
+  "Start label scrolling when one of NODES exceeds the visible limit."
+  (obsidian--graph-stop-marquee)
+  (when (and obsidian-graph-label-marquee-interval
+             (> obsidian-graph-label-marquee-interval 0)
+             (cl-some
+              (lambda (node)
+                (> (length node)
+                   (max 1 obsidian-graph-label-max-characters)))
+              nodes))
+    (setq obsidian--graph-marquee-timer
+          (run-with-timer
+           obsidian-graph-label-marquee-interval
+           obsidian-graph-label-marquee-interval
+           #'obsidian--graph-marquee-tick
+           (current-buffer)))))
+
 ;;; Camera and viewport
 
 (defun obsidian--graph-viewport-size ()
@@ -567,7 +690,9 @@ CURRENT names the active node."
              (layout-height (if compact (min height 22) height))
              (current (and obsidian--current-file
                            (file-name-base obsidian--current-file))))
-        (setq obsidian--graph-points nil)
+        (obsidian--graph-stop-marquee)
+        (setq obsidian--graph-points nil
+              obsidian--graph-marquee-step 0)
         (if nodes
             (let* ((raw-positions
                     (obsidian--force-layout nodes edges
@@ -581,7 +706,8 @@ CURRENT names the active node."
                     obsidian--graph-canvas
                     (obsidian--render-canvas nodes edges positions
                                              width height current))
-              (obsidian--graph-center-camera))
+              (obsidian--graph-center-camera)
+              (obsidian--graph-start-marquee nodes))
           (setq obsidian--graph-canvas-width (car view)
                 obsidian--graph-canvas-height (cdr view)
                 obsidian--graph-current-position nil
