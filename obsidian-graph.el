@@ -232,43 +232,47 @@ merely to consume whitespace."
              (y (+ origin-y
                    (round (* (/ (- (cdr p) ymin) (max 0.01 (- ymax ymin)))
                              target-y-span))))
-             (radius 0)
-             ;; Clamping can collapse every candidate onto the same handful
-             ;; of cells in a narrow terminal.  Bound the search so opening a
-             ;; note never hangs merely because every label cannot fit.
-             (search-limit (max width height))
+             (min-x margin-x)
+             (max-x (max min-x (- width label-width margin-x)))
+             (min-y margin-y)
+             (max-y (max min-y (- height margin-y 1)))
+             (center-x (max min-x (min max-x x)))
+             (center-y (max min-y (min max-y y)))
+             ;; Visit each valid cell by increasing Manhattan distance.
+             ;; Unlike clamping an ever-growing square, this never retries
+             ;; the same edge coordinate thousands of times.
+             (search-limit (+ (- max-x min-x) (- max-y min-y)))
              found)
-        (while (and (not found) (<= radius search-limit))
-          (cl-loop for dy from (- radius) to radius until found do
-                   (cl-loop for dx from (- radius) to radius until found do
-                            (let ((nx (max margin-x
-                                           (min (- width label-width margin-x)
-                                                (+ x dx))))
-                                  (ny (max margin-y
-                                           (min (- height margin-y 1)
-                                                (+ y dy)))))
-                              (unless
-                                  (cl-some
-                                   (lambda (cell)
-                                     (and (< (abs (- ny (cadr cell))) 3)
-                                          (< (abs (- nx (car cell)))
-                                             (+ 4 (max label-width
-                                                       (caddr cell))))))
-                                   occupied)
-                                (push (list nx ny label-width) occupied)
-                                (push (cons node (cons nx ny)) result)
-                                (setq found t)))))
-          (cl-incf radius))
+        (cl-loop for radius from 0 to search-limit until found do
+                 (cl-loop for dy from (- radius) to radius until found do
+                          (let ((dx-distance (- radius (abs dy))))
+                            (dolist (dx (if (zerop dx-distance)
+                                            '(0)
+                                          (list (- dx-distance) dx-distance)))
+                              (unless found
+                                (let ((nx (+ center-x dx))
+                                      (ny (+ center-y dy)))
+                                  (when (and (<= min-x nx max-x)
+                                             (<= min-y ny max-y)
+                                             (not
+                                              (cl-some
+                                               (lambda (cell)
+                                                 (and
+                                                  (< (abs (- ny (cadr cell))) 3)
+                                                  (< (abs (- nx (car cell)))
+                                                     (+ 4
+                                                        (max label-width
+                                                             (caddr cell))))))
+                                               occupied)))
+                                    (push (list nx ny label-width) occupied)
+                                    (push (cons node (cons nx ny)) result)
+                                    (setq found t))))))))
         (unless found
           ;; The canvas is physically too small for non-overlapping labels.
           ;; Keep every node available and let the renderer clip/overlap it;
           ;; this is preferable to blocking all file navigation.
-          (let ((nx (max margin-x
-                         (min (- width label-width margin-x) x)))
-                (ny (max margin-y
-                         (min (- height margin-y 1) y))))
-            (push (list nx ny label-width) occupied)
-            (push (cons node (cons nx ny)) result)))))
+          (push (list center-x center-y label-width) occupied)
+          (push (cons node (cons center-x center-y)) result))))
     result))
 
 (defun obsidian--center-positions (positions source-width source-height
