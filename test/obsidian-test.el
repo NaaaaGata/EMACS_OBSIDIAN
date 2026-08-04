@@ -224,6 +224,19 @@
                   (abs (- (cdr profile) (cdr exchange))))
                16))))
 
+(ert-deftest obsidian-graph-placement-terminates-when-canvas-is-too-small ()
+  (let* ((nodes (mapcar (lambda (number)
+                          (format "とても長い日本語ファイル名%d" number))
+                        (number-sequence 1 12)))
+         (positions (make-hash-table :test #'equal)))
+    (cl-loop for node in nodes
+             for index from 0
+             do (puthash node (cons (float index) (float index)) positions))
+    (with-timeout (1 (ert-fail "Graph placement did not terminate"))
+      (should (= (length nodes)
+                 (length (obsidian--quantize-positions
+                          nodes positions 12 10)))))))
+
 (ert-deftest obsidian-tree-escape-deletes-confirmed-note ()
   (let* ((directory (make-temp-file "obsidian-delete-test-" t))
          (file (expand-file-name "unused.md" directory))
