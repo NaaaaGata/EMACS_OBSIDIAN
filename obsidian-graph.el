@@ -232,8 +232,13 @@ merely to consume whitespace."
              (y (+ origin-y
                    (round (* (/ (- (cdr p) ymin) (max 0.01 (- ymax ymin)))
                              target-y-span))))
-             (radius 0) found)
-        (while (not found)
+             (radius 0)
+             ;; Clamping can collapse every candidate onto the same handful
+             ;; of cells in a narrow terminal.  Bound the search so opening a
+             ;; note never hangs merely because every label cannot fit.
+             (search-limit (max width height))
+             found)
+        (while (and (not found) (<= radius search-limit))
           (cl-loop for dy from (- radius) to radius until found do
                    (cl-loop for dx from (- radius) to radius until found do
                             (let ((nx (max margin-x
@@ -253,7 +258,17 @@ merely to consume whitespace."
                                 (push (list nx ny label-width) occupied)
                                 (push (cons node (cons nx ny)) result)
                                 (setq found t)))))
-          (cl-incf radius))))
+          (cl-incf radius))
+        (unless found
+          ;; The canvas is physically too small for non-overlapping labels.
+          ;; Keep every node available and let the renderer clip/overlap it;
+          ;; this is preferable to blocking all file navigation.
+          (let ((nx (max margin-x
+                         (min (- width label-width margin-x) x)))
+                (ny (max margin-y
+                         (min (- height margin-y 1) y))))
+            (push (list nx ny label-width) occupied)
+            (push (cons node (cons nx ny)) result)))))
     result))
 
 (defun obsidian--center-positions (positions source-width source-height
