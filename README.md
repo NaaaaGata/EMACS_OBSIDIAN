@@ -17,6 +17,7 @@ Emacs 内で Obsidian のような Markdown ノート環境を使うパッケー
 - ツリー／グラフ幅の保存と復元
 - フレーム幅を変更しても3ペインの比率を自動維持
 - フォルダ単位のグラフスコープ（別フォルダのノートを混在させない）
+- Git管理されたVaultで、保存内容のpushとGitHub更新の定期pullを自動実行
 
 ## インストール
 
@@ -109,6 +110,10 @@ Emacs 内で Obsidian のような Markdown ノート環境を使うパッケー
 - `obsidian-timestamp-format`
 - `obsidian-save-window-sizes`
 - `obsidian-delete-by-moving-to-trash`
+- `obsidian-git-auto-sync-on-save`
+- `obsidian-git-auto-pull-interval`（既定値60秒、0またはnilで定期取得を停止）
+
+Git管理されたVaultでは、ノート保存時に変更をコミットし、リモート更新をrebaseで取り込んでからpushします。また、GitHub側の変更を60秒ごとに確認し、ローカルに反映された場合はファイルツリー、開いている未変更バッファ、グラフを自動更新します。未保存の編集がある間はpullを保留するため、入力中の内容を上書きしません。手動で直ちに同期する場合は`M-x obsidian-git-sync-pull`を実行します。
 
 ## テスト
 

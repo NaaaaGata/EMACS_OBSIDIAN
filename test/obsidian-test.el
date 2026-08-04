@@ -381,5 +381,49 @@
     (should (= 14 obsidian--graph-camera-x))
     (should (= (point-min) (point)))))
 
+(ert-deftest obsidian-git-sync-finds-repository-inside-vault ()
+  (let* ((vault (make-temp-file "obsidian-git-vault-" t))
+         (repository (expand-file-name "notes" vault))
+         (git-directory (expand-file-name ".git" repository))
+         (note (expand-file-name "note.md" repository))
+         (obsidian--vault vault))
+    (unwind-protect
+        (progn
+          (make-directory git-directory t)
+          (with-temp-file note (insert "# note\n"))
+          (should (equal (list (file-name-as-directory
+                                (file-truename repository)))
+                         (obsidian-git-sync--repositories))))
+      (delete-directory vault t))))
+
+(ert-deftest obsidian-git-sync-defers-pull-for-unsaved-buffer ()
+  (let* ((repository (file-name-as-directory
+                      (make-temp-file "obsidian-git-buffer-" t)))
+         (note (expand-file-name "note.md" repository))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (with-temp-file note (insert "saved\n"))
+          (setq buffer (find-file-noselect note))
+          (with-current-buffer buffer
+            (goto-char (point-max))
+            (insert "unsaved\n"))
+          (should (obsidian-git-sync--modified-buffer-p repository)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-directory repository t))))
+
+(ert-deftest obsidian-git-sync-push-pulls-before-publishing ()
+  (let ((pull-position
+         (string-match-p "pull --rebase --autostash"
+                         obsidian-git-sync--push-script))
+        (push-position
+         (string-match-p "push origin"
+                         obsidian-git-sync--push-script)))
+    (should pull-position)
+    (should push-position)
+    (should (< pull-position push-position))))
+
 (provide 'obsidian-test)
 ;;; obsidian-test.el ends here
