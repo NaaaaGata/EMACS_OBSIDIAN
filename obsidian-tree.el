@@ -60,6 +60,7 @@ Set this to nil to disable animated labels."
 (define-derived-mode obsidian-tree-mode fundamental-mode "Obsidian-Tree"
   "Major mode for the Obsidian file tree panel.
 RET or mouse-click opens the file at cursor.
+Up/down arrows move between entries.
 TAB or left/right arrows expand/collapse directories."
   :keymap obsidian-tree-mode-map
   (setq-local buffer-read-only t)
@@ -259,6 +260,30 @@ backup files such as `NAME~' are deliberately excluded."
         (setq-local obsidian--tree-expanded (make-hash-table :test 'equal)))
       (puthash path t obsidian--tree-expanded)
       (obsidian--tree-refresh))))
+
+(defun obsidian--tree-move-entry (direction)
+  "Move to the next tree entry in DIRECTION, skipping non-entry lines."
+  (let ((origin (point))
+        (step (if (< direction 0) -1 1))
+        found)
+    (beginning-of-line)
+    (while (and (not found)
+                (zerop (forward-line step)))
+      (when (get-text-property (point) 'obsidian-path)
+        (setq found t)))
+    (if found
+        (beginning-of-line)
+      (goto-char origin))))
+
+(defun obsidian--tree-previous-entry ()
+  "Move the cursor to the previous selectable tree entry."
+  (interactive)
+  (obsidian--tree-move-entry -1))
+
+(defun obsidian--tree-next-entry ()
+  "Move the cursor to the next selectable tree entry."
+  (interactive)
+  (obsidian--tree-move-entry 1))
 
 (defun obsidian--tree-open ()
   "Open file or toggle directory at line point."

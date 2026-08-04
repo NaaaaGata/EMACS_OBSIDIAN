@@ -132,6 +132,32 @@
       (should (equal file
                      (get-text-property (+ (point-min) 3) 'obsidian-path))))))
 
+(ert-deftest obsidian-tree-arrow-keys-move-between-selectable-entries ()
+  (let* ((directory (make-temp-file "obsidian-tree-navigation-" t))
+         (first (expand-file-name "first.md" directory))
+         (second (expand-file-name "second.md" directory)))
+    (unwind-protect
+        (with-temp-buffer
+          (insert "Vault header\n")
+          (obsidian--tree-insert-entry
+           "  " "first" "" 'obsidian-tree-file first "Open")
+          (obsidian--tree-insert-entry
+           "  " "second" "" 'obsidian-tree-file second "Open")
+          (goto-char (point-min))
+          (forward-line 1)
+          (should (equal first (get-text-property (point) 'obsidian-path)))
+          (obsidian--tree-next-entry)
+          (should (equal second (get-text-property (point) 'obsidian-path)))
+          (obsidian--tree-previous-entry)
+          (should (equal first (get-text-property (point) 'obsidian-path))))
+      (delete-directory directory t))))
+
+(ert-deftest obsidian-tree-arrow-keys-use-entry-navigation ()
+  (should (eq (lookup-key obsidian-tree-mode-map (kbd "<up>"))
+              #'obsidian--tree-previous-entry))
+  (should (eq (lookup-key obsidian-tree-mode-map (kbd "<down>"))
+              #'obsidian--tree-next-entry)))
+
 (ert-deftest obsidian-tree-nests-each-level-by-one-column ()
   (let* ((vault (make-temp-file "obsidian-tree-indent-" t))
          (folder (expand-file-name "folder" vault))
