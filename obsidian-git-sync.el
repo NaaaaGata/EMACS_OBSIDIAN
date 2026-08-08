@@ -264,6 +264,18 @@ fi
     (cancel-timer obsidian-git-sync--timer))
   (setq obsidian-git-sync--timer nil))
 
+(defun obsidian-git-sync--workspace-visible-p ()
+  "Return non-nil while an Obsidian workspace is visible."
+  (or (and (boundp 'obsidian-tree-buffer-name)
+           (get-buffer-window obsidian-tree-buffer-name 'visible))
+      (and (boundp 'obsidian-graph-buffer-name)
+           (get-buffer-window obsidian-graph-buffer-name 'visible))))
+
+(defun obsidian-git-sync--timer-tick ()
+  "Pull remote changes only while an Obsidian workspace is visible."
+  (when (obsidian-git-sync--workspace-visible-p)
+    (obsidian-git-sync-pull)))
+
 (defun obsidian-git-sync--start-timer ()
   "Start periodic inbound synchronization for the active vault."
   (obsidian-git-sync--stop-timer)
@@ -271,7 +283,7 @@ fi
              (> obsidian-git-auto-pull-interval 0))
     (setq obsidian-git-sync--timer
           (run-at-time 0 obsidian-git-auto-pull-interval
-                       #'obsidian-git-sync-pull))))
+                       #'obsidian-git-sync--timer-tick))))
 
 ;;;###autoload
 (define-minor-mode obsidian-git-auto-sync-mode

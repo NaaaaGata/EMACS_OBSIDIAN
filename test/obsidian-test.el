@@ -541,5 +541,25 @@
     (should push-position)
     (should (< pull-position push-position))))
 
+(ert-deftest obsidian-git-sync-timer-stays-idle-when-workspace-is-hidden ()
+  (let ((pull-called nil))
+    (cl-letf (((symbol-function 'get-buffer-window)
+               (lambda (&rest _arguments) nil))
+              ((symbol-function 'obsidian-git-sync-pull)
+               (lambda () (setq pull-called t))))
+      (obsidian-git-sync--timer-tick)
+      (should-not pull-called))))
+
+(ert-deftest obsidian-git-sync-timer-runs-when-workspace-is-visible ()
+  (let ((pull-called nil))
+    (cl-letf (((symbol-function 'get-buffer-window)
+               (lambda (buffer-name &optional _all-frames)
+                 (and (equal buffer-name obsidian-tree-buffer-name)
+                      (selected-window))))
+              ((symbol-function 'obsidian-git-sync-pull)
+               (lambda () (setq pull-called t))))
+      (obsidian-git-sync--timer-tick)
+      (should pull-called))))
+
 (provide 'obsidian-test)
 ;;; obsidian-test.el ends here
