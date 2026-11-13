@@ -88,9 +88,36 @@
   (let* ((nodes '("source" "target"))
          (edges '(("source" . "target")))
          (positions '(("source" . (2 . 2)) ("target" . (25 . 8))))
+         (obsidian-graph-edge-style 'box)
          (text (obsidian--render-graph nodes edges positions 40 12 nil)))
     (should-not (string-match-p "[╱╲/\\\\]" text))
-    (should (string-match-p "[┌┐└┘]" text))))
+    (should (string-match-p "[╭╮╰╯┏┓┗┛]" text))))
+
+(ert-deftest obsidian-graph-highlights-active-edges-with-heavy-lines ()
+  (let* ((nodes '("music" "guitar" "bass"))
+         (edges '(("music" . "guitar") ("guitar" . "bass")))
+         (positions '(("music" . (2 . 2))
+                      ("guitar" . (18 . 2))
+                      ("bass" . (32 . 6))))
+         (obsidian-graph-edge-style 'box)
+         (text (obsidian--render-graph nodes edges positions 45 10 "music")))
+    (should (string-match-p "[━┃┏┓┗┛]" text))
+    (should (string-match-p "[─│╭╮╰╯]" text))))
+
+(ert-deftest obsidian-graph-braille-mode-preserves-japanese-column-width ()
+  (let* ((nodes '("技術" "HumanDigitalTwin" "考察した要素"))
+         (edges '(("技術" . "HumanDigitalTwin")
+                  ("技術" . "考察した要素")))
+         (positions '(("技術" . (3 . 5))
+                      ("HumanDigitalTwin" . (25 . 5))
+                      ("考察した要素" . (15 . 1))))
+         (obsidian-graph-edge-style 'braille)
+         (canvas (obsidian--render-canvas nodes edges positions 50 8 "技術"))
+         (text (obsidian--canvas-as-string canvas)))
+    (dotimes (row (length canvas))
+      (should (= 50 (string-width (aref canvas row)))))
+    (should (string-match-p "[\x2801-\x28ff]" text))
+    (should (string-match-p "◆ 技術" (aref canvas 5)))))
 
 (ert-deftest obsidian-japanese-labels-preserve-canvas-column-width ()
   (let* ((nodes '("技術" "HumanDigitalTwin" "考察した要素"))
@@ -235,10 +262,14 @@
   (should (eq (lookup-key obsidian-tree-mode-map (kbd "<down>"))
               #'obsidian--tree-next-entry)))
 
-(ert-deftest obsidian-tree-nests-each-level-by-one-column ()
+(ert-deftest obsidian-tree-renders-guides-badges-and-active-bar ()
   (let* ((vault (make-temp-file "obsidian-tree-indent-" t))
          (folder (expand-file-name "folder" vault))
          (file (expand-file-name "note.md" folder))
+         (obsidian--vault vault)
+         (obsidian--current-scope vault)
+         (obsidian--current-file file)
+         (obsidian-tree-show-counts t)
          (expanded (make-hash-table :test 'equal)))
     (unwind-protect
         (progn
@@ -248,10 +279,9 @@
           (with-temp-buffer
             (obsidian--tree-insert vault 0 expanded)
             (goto-char (point-min))
-            (should (looking-at "v folder/"))
+            (should (looking-at "  ▾ folder/  1$"))
             (forward-line 1)
-            ;; The child label begins one column to the right of its parent.
-            (should (looking-at "   note$"))
+            (should (looking-at "▎ └─ ◆ note$"))
             (should-not (string-match-p
                          "\\.md"
                          (buffer-substring-no-properties
@@ -540,6 +570,87 @@
     (should pull-position)
     (should push-position)
     (should (< pull-position push-position))))
+
+(ert-deftest obsidian-header-buttons-bind-header-line-mouse-click ()
+  (let* ((btn (obsidian--make-header-button "[+新規]" #'obsidian-create-note "Help"))
+         (map (get-text-property 0 'local-map btn)))
+    (should (keymapp map))
+    (should (eq #'ignore (lookup-key map [header-line down-mouse-1])))
+    (should (commandp (lookup-key map [header-line mouse-1])))))
+
+(ert-deftest obsidian-live-preview-conceals-inactive-lines-and-reveals-cursor-line ()
+  (with-temp-buffer
+    (let ((obsidian-live-preview t)
+          (obsidian--vault nil))
+      (insert "# Title\n\nSee [[guitar|ギター]] here.\n")
+      (goto-char (point-min))
+      (obsidian--fontify-links)
+      (should (= 2 (length obsidian--live-link-overlays)))
+      (should (cl-every (lambda (ov) (overlay-get ov 'invisible))
+                        obsidian--live-link-overlays))
+      ;; Moving the cursor onto line 3 reveals raw [[guitar|ギター]] syntax.
+      (forward-line 2)
+      (obsidian--sync-live-preview-line)
+      (should (cl-every (lambda (ov) (not (overlay-get ov 'invisible)))
+                        obsidian--live-link-overlays)))))
+
+(ert-deftest obsidian-completion-at-point-completes-wiki-links ()
+  (let ((obsidian--vault obsidian-test--vault))
+    (with-temp-buffer
+      (insert "Connected to [[gu")
+      (let ((capf (obsidian-completion-at-point)))
+        (should capf)
+        (should (member "guitar" (nth 2 capf)))))))
+
+(ert-deftest obsidian-backlinks-overlay-does-not-modify-buffer-string ()
+  (let* ((vault (make-temp-file "obsidian-backlink-ui-" t))
+         (hub (expand-file-name "hub.md" vault))
+         (leaf (expand-file-name "leaf.md" vault))
+         (obsidian--vault vault)
+         (obsidian-show-backlinks t)
+         buf)
+    (unwind-protect
+        (progn
+          (with-temp-file hub (insert "# hub\n"))
+          (with-temp-file leaf (insert "Links back to [[hub]].\n"))
+          (setq buf (find-file-noselect hub))
+          (with-current-buffer buf
+            (obsidian--refresh-backlinks-overlay)
+            (should (overlayp obsidian--backlinks-overlay))
+            (should (string-match-p "leaf"
+                                    (overlay-get obsidian--backlinks-overlay
+                                                 'after-string)))
+            (should (equal "# hub\n" (buffer-string)))))
+      (when (buffer-live-p buf) (kill-buffer buf))
+      (delete-directory vault t))))
+
+(ert-deftest obsidian-graph-auto-and-local-scopes-find-cross-folder-notes ()
+  (let ((obsidian--vault obsidian-test--vault)
+        (obsidian--current-scope obsidian-test--vault)
+        (obsidian-graph-scope-mode 'auto))
+    ;; `auto' falls back to vault notes when root has no direct files.
+    (should (= 8 (length (obsidian--graph-effective-files)))))
+  (let* ((vault (make-temp-file "obsidian-local-scope-" t))
+         (dir-a (expand-file-name "a" vault))
+         (dir-b (expand-file-name "b" vault))
+         (note-a (expand-file-name "alpha.md" dir-a))
+         (note-b (expand-file-name "beta.md" dir-b))
+         (note-isolated (expand-file-name "isolated.md" dir-b))
+         (obsidian--vault vault)
+         (obsidian--current-file note-a)
+         (obsidian-graph-scope-mode 'local))
+    (unwind-protect
+        (progn
+          (make-directory dir-a t)
+          (make-directory dir-b t)
+          (with-temp-file note-a (insert "[[beta]]\n"))
+          (with-temp-file note-b (insert "# beta\n"))
+          (with-temp-file note-isolated (insert "# isolated\n"))
+          (let ((names (mapcar #'file-name-base (obsidian--graph-effective-files))))
+            (should (member "alpha" names))
+            (should (member "beta" names))
+            (should-not (member "isolated" names))))
+      (delete-directory vault t))))
 
 (provide 'obsidian-test)
 ;;; obsidian-test.el ends here

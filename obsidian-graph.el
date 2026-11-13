@@ -1,8 +1,10 @@
-;;; obsidian-graph.el --- Pannable text graph view -*- lexical-binding: t; -*-
+;;; obsidian-graph.el --- Interactive pannable & zoomable terminal graph view -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Builds a deterministic force-directed layout, routes edges with Unicode
-;; box-drawing characters, and exposes a game-like pannable viewport.
+;; Builds a deterministic force-directed layout, renders edges using either
+;; rounded + heavy active Unicode box-drawing characters or high-resolution
+;; 2x4 Braille sub-cell lines, and supports mouse grab-panning, wheel zoom,
+;; clickable header controls, 2-hop local scope, and TAB node navigation.
 
 ;;; Code:
 
@@ -18,9 +20,14 @@
 (defvar obsidian-link-regexp)
 (defvar obsidian-graph-width)
 (defvar obsidian-graph-buffer-name)
+(defvar obsidian-show-header-buttons)
 
 (declare-function obsidian--open-note "obsidian-editor")
 (declare-function obsidian--note-file-p "obsidian-tree")
+(declare-function obsidian--make-header-button "obsidian-windows")
+(declare-function obsidian-shrink-graph "obsidian-windows")
+(declare-function obsidian-enlarge-graph "obsidian-windows")
+(declare-function obsidian-toggle-graph "obsidian-windows")
 
 (defcustom obsidian-graph-max-nodes 200
   "Maximum number of nodes drawn in the graph view."
@@ -38,7 +45,7 @@
   "Maximum number of note-name characters shown in a graph node."
   :type 'integer :group 'obsidian)
 
-(defcustom obsidian-graph-label-marquee-interval 0.40
+(defcustom obsidian-graph-label-marquee-interval 0.45
   "Seconds between scrolling steps for long graph node names.
 Set this to nil to disable animated graph labels."
   :type '(choice (const :tag "Disabled" nil) number)
@@ -48,39 +55,157 @@ Set this to nil to disable animated graph labels."
   "Text separating the end and beginning of a scrolling graph label."
   :type 'string :group 'obsidian)
 
+(defcustom obsidian-graph-edge-style 'box
+  "Visual rendering style for graph edges in terminal and GUI frames.
+`box' draws rounded orthogonal lines (`╭╮╰╯') with bold highlighted active
+connections (`┏┓┗┛━┃').  `braille' draws smooth 2x4 sub-cell diagonal lines
+using Unicode Braille patterns (`⠀'–`⣿')."
+  :type '(choice (const :tag "Rounded + bold box-drawing" box)
+                 (const :tag "High-resolution Braille patterns" braille))
+  :group 'obsidian)
+
+(defcustom obsidian-graph-scope-mode 'auto
+  "Which notes to include in the graph view.
+`auto' shows the active folder, falling back to the whole vault when at an
+empty vault root.  `local' shows a 2-hop cross-folder neighborhood around the
+current note.  `folder' restricts strictly to the current folder.  `global'
+shows all notes in the vault."
+  :type '(choice (const :tag "Auto (folder or vault fallback)" auto)
+                 (const :tag "Local 2-hop neighborhood" local)
+                 (const :tag "Current folder only" folder)
+                 (const :tag "Entire vault" global))
+  :group 'obsidian)
+
+
+;; Adaptive graph faces
+
 (defface obsidian-graph-current
-  '((t :foreground "#ff5f5f" :weight bold))
+  '((((class color) (background dark)) :foreground "#ff6b6b" :weight bold)
+    (((class color) (background light)) :foreground "#cf222e" :weight bold)
+    (t :foreground "#ff5f5f" :weight bold))
   "Face for the current note." :group 'obsidian)
+
+(defface obsidian-graph-focused
+  '((((class color) (background dark)) :foreground "#e5c07b" :weight bold :underline t)
+    (((class color) (background light)) :foreground "#9a6700" :weight bold :underline t)
+    (t :weight bold :underline t))
+  "Face for the keyboard-focused node (`TAB' cycling)." :group 'obsidian)
+
 (defface obsidian-graph-connected
-  '((t :foreground "#5fafff" :weight bold))
+  '((((class color) (background dark)) :foreground "#61afef" :weight bold)
+    (((class color) (background light)) :foreground "#0969da" :weight bold)
+    (t :foreground "#5fafff" :weight bold))
   "Face for notes connected to the current note." :group 'obsidian)
+
+(defface obsidian-graph-node
+  '((((class color) (background dark)) :foreground "#abb2bf")
+    (((class color) (background light)) :foreground "#24292f")
+    (t :inherit default))
+  "Face for linked background notes." :group 'obsidian)
+
 (defface obsidian-graph-unlinked
-  '((t :foreground "gray55"))
+  '((((class color) (background dark)) :foreground "#5c6370")
+    (((class color) (background light)) :foreground "#8c959f")
+    (t :foreground "gray55"))
   "Face for unlinked notes." :group 'obsidian)
+
 (defface obsidian-graph-edge
-  '((t :foreground "gray65"))
-  "Face for graph edges and linked notes." :group 'obsidian)
+  '((((class color) (background dark)) :foreground "#4b5263")
+    (((class color) (background light)) :foreground "#afb8c1")
+    (t :foreground "gray65"))
+  "Face for background graph edges." :group 'obsidian)
+
+(defface obsidian-graph-edge-active
+  '((((class color) (background dark)) :foreground "#61afef" :weight bold)
+    (((class color) (background light)) :foreground "#0969da" :weight bold)
+    (t :foreground "#5fafff" :weight bold))
+  "Face for edges directly connected to the active or focused note."
+  :group 'obsidian)
+
+
+;; State variables
 
 (defvar obsidian--graph-points nil)
 (defvar-local obsidian--graph-camera-x 0)
 (defvar-local obsidian--graph-camera-y 0)
+(defvar-local obsidian--graph-zoom 1.0)
 (defvar-local obsidian--graph-canvas nil)
 (defvar-local obsidian--graph-canvas-width 0)
 (defvar-local obsidian--graph-canvas-height 0)
 (defvar-local obsidian--graph-current-position nil)
+(defvar-local obsidian--graph-node-positions nil
+  "Alist of `(NODE . (X . Y))' in the rendered canvas.")
+(defvar-local obsidian--graph-ordered-nodes nil
+  "Ordered list of nodes available for `TAB' focus cycling.")
+(defvar-local obsidian--graph-focused-node nil
+  "Node name currently highlighted via `TAB' keyboard navigation.")
 (defvar-local obsidian--graph-marquee-timer nil
   "Timer used to animate long graph node names.")
 (defvar-local obsidian--graph-marquee-step 0
   "Current character offset of graph label marquees.")
 
 (define-derived-mode obsidian-graph-mode special-mode "Obsidian-Graph"
-  "Major mode for a clickable, pannable text graph."
+  "Major mode for a clickable, mouse-pannable, zoomable terminal graph."
   (setq-local truncate-lines t)
   ;; The arrows control a camera, not a text cursor.
   (setq-local cursor-type nil)
+  (setq-local header-line-format '(:eval (obsidian--graph-header-line)))
   (add-hook 'kill-buffer-hook #'obsidian--graph-stop-marquee nil t))
 
-;;; Notes and edges
+(defun obsidian--graph-scope-label ()
+  "Return a short Japanese label for `obsidian-graph-scope-mode'."
+  (pcase obsidian-graph-scope-mode
+    ('local "2-hop")
+    ('folder "フォルダ")
+    ('global "全体")
+    (_ "自動")))
+
+(defun obsidian--graph-header-line ()
+  "Build the clickable header toolbar for the graph window."
+  (let* ((scope-rel (if (and obsidian--current-scope obsidian--vault)
+                        (file-relative-name obsidian--current-scope obsidian--vault)
+                      "./"))
+         (folder-name (if (equal scope-rel "./")
+                          "root"
+                        (directory-file-name scope-rel)))
+         (title (propertize (format " ◆ %s " folder-name)
+                            'face 'obsidian-header-title))
+         (style-label (if (eq obsidian-graph-edge-style 'braille)
+                          "[線:点字]"
+                        "[線:罫線]")))
+    (if (not obsidian-show-header-buttons)
+        title
+      (concat
+       title
+       (obsidian--make-header-button
+        (format "[範囲:%s]" (obsidian--graph-scope-label))
+        #'obsidian-graph-cycle-scope
+        "表示範囲を切替: 自動 → 2-hop近傍 → フォルダ → Vault全体 (f)"
+        (not (eq obsidian-graph-scope-mode 'auto)))
+       " "
+       (obsidian--make-header-button
+        style-label
+        #'obsidian-graph-toggle-style
+        "線の描画方式を切替: 角丸＋太線罫線 / 点字高精細ライン (b)"
+        (eq obsidian-graph-edge-style 'braille))
+       " "
+       (obsidian--make-header-button "[-]" #'obsidian-graph-zoom-out
+                                     "グラフを縮小 (- / ホイール下)")
+       (obsidian--make-header-button "[+]" #'obsidian-graph-zoom-in
+                                     "グラフを拡大 (+ / ホイール上)")
+       (obsidian--make-header-button "[中央]" #'obsidian--graph-center-camera
+                                     "現在ノートを中央へ戻す (0)")
+       " "
+       (obsidian--make-header-button "[◀]" #'obsidian-shrink-graph
+                                     "グラフ幅を狭くする (<)")
+       (obsidian--make-header-button "[▶]" #'obsidian-enlarge-graph
+                                     "グラフ幅を広くする (>)")
+       " "
+       (obsidian--make-header-button "[×]" #'obsidian-toggle-graph
+                                     "グラフパネルを隠す (q)")))))
+
+
+;;; Notes, scopes, and edges
 
 (defun obsidian--all-note-files ()
   "Return real, readable Markdown notes in the vault."
@@ -96,7 +221,7 @@ Set this to nil to disable animated graph labels."
   (delete-dups (mapcar #'file-name-base (obsidian--all-note-files))))
 
 (defun obsidian--notes-in-current-scope ()
-  "Return notes in the selected directory scope."
+  "Return notes strictly in the selected directory scope."
   (let* ((scope (file-name-as-directory
                  (file-truename (or obsidian--current-scope obsidian--vault))))
          (vault (file-name-as-directory (file-truename obsidian--vault)))
@@ -109,6 +234,42 @@ Set this to nil to disable animated graph labels."
          files)
       (cl-remove-if-not
        (lambda (file) (string-prefix-p scope (file-truename file))) files))))
+
+(defun obsidian--local-neighborhood-files (center-file max-hops)
+  "Return files within MAX-HOPS wiki-link steps of CENTER-FILE across the vault."
+  (let* ((all-files (obsidian--all-note-files))
+         (edges (obsidian--build-edges all-files))
+         (center (and center-file (file-name-base center-file)))
+         (visited (make-hash-table :test #'equal))
+         (frontier (and center (list center))))
+    (when center
+      (puthash center t visited)
+      (dotimes (_ max-hops)
+        (let (next-frontier)
+          (dolist (node frontier)
+            (dolist (nbr (obsidian--connected-nodes node edges))
+              (unless (gethash nbr visited)
+                (puthash nbr t visited)
+                (push nbr next-frontier))))
+          (setq frontier next-frontier))))
+    (if (> (hash-table-count visited) 0)
+        (cl-remove-if-not
+         (lambda (f) (gethash (file-name-base f) visited))
+         all-files)
+      all-files)))
+
+(defun obsidian--graph-effective-files ()
+  "Return note files to display according to `obsidian-graph-scope-mode'."
+  (pcase obsidian-graph-scope-mode
+    ('global (obsidian--all-note-files))
+    ('folder (obsidian--notes-in-current-scope))
+    ('local (if obsidian--current-file
+                (obsidian--local-neighborhood-files obsidian--current-file 2)
+              (or (obsidian--notes-in-current-scope)
+                  (obsidian--all-note-files))))
+    (_ ;; `auto': prefer folder scope, but fall back to all vault notes if empty!
+     (or (obsidian--notes-in-current-scope)
+         (obsidian--all-note-files)))))
 
 (defun obsidian--find-note (name)
   "Find note NAME, preferring the current scope."
@@ -152,6 +313,7 @@ Set this to nil to disable animated graph labels."
                    (cond ((equal node (car edge)) (cdr edge))
                          ((equal node (cdr edge)) (car edge))))
                  edges))))
+
 
 ;;; Force-directed layout
 
@@ -212,17 +374,13 @@ Set this to nil to disable animated graph labels."
     (obsidian--quantize-positions nodes positions width height)))
 
 (defun obsidian--quantize-positions (nodes positions width height)
-  "Place NODES from POSITIONS in a compact cluster inside WIDTH by HEIGHT.
-The old renderer normalized every graph to the complete canvas.  That made a
-small chain span the whole panel, even when its force-directed positions were
-already close.  This version caps the target span according to node count and
-centers the result; it scales down to fit but never stretches a small graph
-merely to consume whitespace."
+  "Place NODES from POSITIONS in a compact cluster inside WIDTH by HEIGHT."
   (let* ((values (mapcar (lambda (node) (gethash node positions)) nodes))
          (xmin (apply #'min (mapcar #'car values)))
          (xmax (apply #'max (mapcar #'car values)))
          (ymin (apply #'min (mapcar #'cdr values)))
          (ymax (apply #'max (mapcar #'cdr values)))
+         (zoom (or obsidian--graph-zoom 1.0))
          (margin-x 2) (margin-y 2)
          (max-label-width
           (apply #'max (mapcar #'obsidian--graph-node-label-width nodes)))
@@ -232,17 +390,18 @@ merely to consume whitespace."
          (target-x-span
           (min available-x
                (max 1 (round (* obsidian-graph-cluster-column-spacing
+                                zoom
                                 root-count)))))
          (target-y-span
           (min available-y
                (max 1 (round (* obsidian-graph-cluster-row-spacing
+                                zoom
                                 root-count)))))
          (origin-x (+ margin-x (/ (- available-x target-x-span) 2)))
          (origin-y (+ margin-y (/ (- available-y target-y-span) 2)))
          occupied result)
     (dolist (node nodes)
       (let* ((p (gethash node positions))
-             ;; Obsidian hides the Markdown extension in graph labels.
              (label-width (obsidian--graph-node-label-width node))
              (x (+ origin-x
                    (round (* (/ (- (car p) xmin) (max 0.01 (- xmax xmin)))
@@ -256,9 +415,6 @@ merely to consume whitespace."
              (max-y (max min-y (- height margin-y 1)))
              (center-x (max min-x (min max-x x)))
              (center-y (max min-y (min max-y y)))
-             ;; Visit each valid cell by increasing Manhattan distance.
-             ;; Unlike clamping an ever-growing square, this never retries
-             ;; the same edge coordinate thousands of times.
              (search-limit (+ (- max-x min-x) (- max-y min-y)))
              found)
         (cl-loop for radius from 0 to search-limit until found do
@@ -286,17 +442,13 @@ merely to consume whitespace."
                                     (push (cons node (cons nx ny)) result)
                                     (setq found t))))))))
         (unless found
-          ;; The canvas is physically too small for non-overlapping labels.
-          ;; Keep every node available and let the renderer clip/overlap it;
-          ;; this is preferable to blocking all file navigation.
           (push (list center-x center-y label-width) occupied)
           (push (cons node (cons center-x center-y)) result))))
     result))
 
 (defun obsidian--center-positions (positions source-width source-height
                                              target-width target-height)
-  "Center POSITIONS from SOURCE-WIDTH by SOURCE-HEIGHT.
-The destination measures TARGET-WIDTH by TARGET-HEIGHT."
+  "Center POSITIONS from SOURCE-WIDTH by SOURCE-HEIGHT in TARGET-WIDTH by TARGET-HEIGHT."
   (let ((dx (max 0 (/ (- target-width source-width) 2)))
         (dy (max 0 (/ (- target-height source-height) 2))))
     (mapcar (lambda (entry)
@@ -304,7 +456,8 @@ The destination measures TARGET-WIDTH by TARGET-HEIGHT."
                     (cons (+ dx (cadr entry)) (+ dy (cddr entry)))))
             positions)))
 
-;;; Canvas rendering
+
+;;; Canvas rendering (Rounded + Heavy Box-Drawing & 2x4 Braille Subpixel)
 
 (defun obsidian--graph-name-window (node step)
   "Return the visible character window of NODE at marquee STEP."
@@ -344,9 +497,11 @@ The destination measures TARGET-WIDTH by TARGET-HEIGHT."
   "Return the fixed display width reserved for NODE and its marker."
   (+ 2 (obsidian--graph-name-slot-width node)))
 
-(defun obsidian--node-label (node current)
-  "Return the visible label for NODE, marking CURRENT specially."
-  (let ((marker (if (equal node current) "◆" "●")))
+(defun obsidian--node-label (node current &optional focused)
+  "Return the visible label for NODE, marking CURRENT (`◆') and FOCUSED (`◈')."
+  (let ((marker (cond ((equal node current) "◆")
+                      ((and focused (equal node focused)) "◈")
+                      (t "●"))))
     (if (<= (length node) (max 1 obsidian-graph-label-max-characters))
         (format "%s %s" marker node)
       (let* ((slot-width (obsidian--graph-name-slot-width node))
@@ -360,17 +515,11 @@ The destination measures TARGET-WIDTH by TARGET-HEIGHT."
         (concat marker " " placeholder)))))
 
 (defun obsidian--replace-display-columns (line column replacement)
-  "Put REPLACEMENT into LINE at display COLUMN.
-The returned string preserves LINE's original display width even when LINE or
-REPLACEMENT contains Japanese or other double-width characters."
+  "Put REPLACEMENT into LINE at display COLUMN while preserving display width."
   (let* ((available (max 0 (- (string-width line) column)))
          (visible (truncate-string-to-width replacement available nil nil ""))
          (end-column (min (string-width line)
                           (+ column (string-width visible)))))
-    ;; COLUMN and END-COLUMN are terminal display columns, not Lisp string
-    ;; indices.  After one Japanese label has been inserted, `length' is less
-    ;; than `string-width'; using `substring' for a second label on that row
-    ;; therefore raises `args-out-of-range'.
     (concat (truncate-string-to-width line column nil nil "")
             visible
             (truncate-string-to-width
@@ -378,12 +527,9 @@ REPLACEMENT contains Japanese or other double-width characters."
 
 (defun obsidian--display-column-slice (line start width)
   "Return WIDTH display columns of LINE beginning at display column START."
-  ;; END-COLUMN is absolute, not a length, in `truncate-string-to-width'.
   (truncate-string-to-width line (+ start width) start nil ""))
 
-;; Each edge cell stores a four-bit connection mask.  Combining masks before
-;; choosing a glyph gives correct corners and junctions without // or \\
-;; staircases.  Bits are north=1, east=2, south=4, west=8.
+;; Four-bit connection mask: north=1, east=2, south=4, west=8.
 (defconst obsidian--graph-direction-north 1)
 (defconst obsidian--graph-direction-east 2)
 (defconst obsidian--graph-direction-south 4)
@@ -449,68 +595,144 @@ When HORIZONTAL-FIRST is non-nil, use the horizontal leg first."
              (aset to-row (car to)
                    (logior (aref to-row (car to)) (cdr directions))))))
 
-(defun obsidian--mask-character (mask)
-  "Convert four-direction MASK to a Unicode box-drawing character."
-  (aref [32 9474 9472 9492 9474 9474 9484 9500
-         9472 9496 9472 9524 9488 9508 9516 9532]
-        mask))
+(defun obsidian--mask-character (mask &optional heavy-p)
+  "Convert four-direction MASK to rounded light or HEAVY-P box-drawing glyph."
+  (if heavy-p
+      ;; Heavy box-drawing:  ┃ ━ ┗ ┃ ┃ ┏ ┣ ━ ┛ ━ ┻ ┓ ┫ ┳ ╋
+      (aref [?\s ?┃ ?━ ?┗ ?┃ ?┃ ?┏ ?┣
+             ?━ ?┛ ?━ ?┻ ?┓ ?┫ ?┳ ?╋]
+            mask)
+    ;; Rounded light box-drawing:  │ ─ ╰ │ │ ╭ ├ ─ ╯ ─ ┴ ╮ ┤ ┬ ┼
+    (aref [?\s ?│ ?─ ?╰ ?│ ?│ ?╭ ?├
+           ?─ ?╯ ?─ ?┴ ?╮ ?┤ ?┬ ?┼]
+          mask)))
+
+(defun obsidian--braille-bit (sub-x sub-y)
+  "Return the Unicode Braille bit for SUB-X (0..1) and SUB-Y (0..3)."
+  (if (zerop sub-x)
+      (aref [#x01 #x02 #x04 #x40] sub-y)
+    (aref [#x08 #x10 #x20 #x80] sub-y)))
+
+(defun obsidian--add-braille-edge (from to masks width height blocked)
+  "Rasterize a smooth 2x4 sub-cell Braille line FROM to TO into MASKS."
+  (let* ((x0 (+ (* (car from) 2) 1))
+         (y0 (+ (* (cdr from) 4) 2))
+         (x1 (+ (* (car to) 2) 1))
+         (y1 (+ (* (cdr to) 4) 2))
+         (dx (abs (- x1 x0)))
+         (sx (if (< x0 x1) 1 -1))
+         (dy (- (abs (- y1 y0))))
+         (sy (if (< y0 y1) 1 -1))
+         (err (+ dx dy))
+         (done nil))
+    (while (not done)
+      (let ((cx (/ x0 2))
+            (cy (/ y0 4)))
+        (when (and (<= 0 cx (1- width))
+                   (<= 0 cy (1- height))
+                   (not (gethash (cons cx cy) blocked)))
+          (let ((row-vec (aref masks cy))
+                (bit (obsidian--braille-bit (% x0 2) (% y0 4))))
+            (aset row-vec cx (logior (aref row-vec cx) bit)))))
+      (if (and (= x0 x1) (= y0 y1))
+          (setq done t)
+        (let ((e2 (* 2 err)))
+          (when (>= e2 dy)
+            (setq err (+ err dy)
+                  x0 (+ x0 sx)))
+          (when (<= e2 dx)
+            (setq err (+ err dx)
+                  y0 (+ y0 sy))))))))
+
+(defun obsidian--render-edge-row (bg-row active-row width braille-p)
+  "Build one propertized WIDTH-column string from BG-ROW and ACTIVE-ROW."
+  (let ((chunks nil))
+    (dotimes (col width)
+      (let ((act (aref active-row col))
+            (bg (aref bg-row col)))
+        (cond
+         (braille-p
+          (let ((merged (logior act bg)))
+            (if (zerop merged)
+                (push " " chunks)
+              (push (propertize (char-to-string (+ #x2800 merged))
+                                'face (if (> act 0)
+                                          'obsidian-graph-edge-active
+                                        'obsidian-graph-edge))
+                    chunks))))
+         ((> act 0)
+          (push (propertize (char-to-string (obsidian--mask-character act t))
+                            'face 'obsidian-graph-edge-active)
+                chunks))
+         ((> bg 0)
+          (push (propertize (char-to-string (obsidian--mask-character bg nil))
+                            'face 'obsidian-graph-edge)
+                chunks))
+         (t
+          (push " " chunks)))))
+    (apply #'concat (nreverse chunks))))
 
 (defun obsidian--render-canvas (nodes edges positions width height current)
   "Render NODES and EDGES at POSITIONS on a WIDTH by HEIGHT canvas.
 CURRENT names the active node."
-  (let ((grid (make-vector height nil))
-        (masks (make-vector height nil))
-        (blocked (make-hash-table :test #'equal))
-        (connected (obsidian--connected-nodes current edges)))
+  (let* ((bg-masks (make-vector height nil))
+         (active-masks (make-vector height nil))
+         (blocked (make-hash-table :test #'equal))
+         (focused obsidian--graph-focused-node)
+         (highlight-node (or current focused))
+         (connected (obsidian--connected-nodes highlight-node edges))
+         (braille-p (eq obsidian-graph-edge-style 'braille)))
     (dotimes (row height)
-      (aset grid row (make-vector width ?\s))
-      (aset masks row (make-vector width 0)))
-    ;; Protect only label text.  The marker stays available as an edge anchor,
-    ;; so connections visibly reach ●/◆ instead of stopping several cells away.
+      (aset bg-masks row (make-vector width 0))
+      (aset active-masks row (make-vector width 0)))
+    ;; Protect label text while leaving the marker cell open as an edge anchor.
     (dolist (node nodes)
       (let* ((p (cdr (assoc node positions))) (x (car p)) (y (cdr p))
-             (label (obsidian--node-label node current))
+             (label (obsidian--node-label node current focused))
              (text-offset (string-width
                            (substring label 0 (min 2 (length label))))))
         (cl-loop for xx from (+ x text-offset)
                  to (min (1- width) (+ x (string-width label))) do
                  (puthash (cons xx y) t blocked))))
-    ;; Route edges at right angles.  Of the two possible L-shaped routes, use
-    ;; the one that crosses fewer labels.
+    ;; Route background edges vs active incident edges into separate layers.
     (dolist (edge edges)
-      (let* ((a (cdr (assoc (car edge) positions)))
-             (b (cdr (assoc (cdr edge) positions))))
+      (let* ((u (car edge)) (v (cdr edge))
+             (a (cdr (assoc u positions)))
+             (b (cdr (assoc v positions)))
+             (hot-p (and highlight-node
+                         (or (equal u highlight-node)
+                             (equal v highlight-node))))
+             (target-masks (if hot-p active-masks bg-masks)))
         (when (and a b)
-          (obsidian--add-path-to-masks
-           (obsidian--choose-orthogonal-path a b blocked) masks))))
-    ;; Materialize the merged direction masks as corners and junctions.
-    (dotimes (row height)
-      (dotimes (column width)
-        (let ((mask (aref (aref masks row) column)))
-          (unless (zerop mask)
-            (aset (aref grid row) column
-                  (obsidian--mask-character mask))))))
+          (if braille-p
+              (obsidian--add-braille-edge a b target-masks width height blocked)
+            (obsidian--add-path-to-masks
+             (obsidian--choose-orthogonal-path a b blocked) target-masks)))))
     (let ((canvas (make-vector height nil)))
       (dotimes (row height)
-        (aset canvas row (concat (append (aref grid row) nil))))
-      ;; Labels are always the top layer.
+        (aset canvas row
+              (obsidian--render-edge-row (aref bg-masks row)
+                                         (aref active-masks row)
+                                         width braille-p)))
+      ;; Labels are always placed on the top layer.
       (dolist (node nodes)
         (let* ((p (cdr (assoc node positions))) (x (car p)) (y (cdr p))
-               (label (obsidian--node-label node current))
+               (label (obsidian--node-label node current focused))
                (face (cond ((equal node current) 'obsidian-graph-current)
+                           ((and focused (equal node focused))
+                            'obsidian-graph-focused)
                            ((member node connected) 'obsidian-graph-connected)
                            ((cl-some (lambda (edge)
                                        (or (equal node (car edge))
                                            (equal node (cdr edge)))) edges)
-                            'obsidian-graph-edge)
+                            'obsidian-graph-node)
                            (t 'obsidian-graph-unlinked)))
                (line (aref canvas y))
                (visible (truncate-string-to-width label (- width x) nil nil "")))
-          ;; Add properties before insertion so offsets are ordinary string
-          ;; indices, while placement remains based on terminal display cells.
           (add-text-properties
            0 (length visible)
-           `(face ,face mouse-face highlight help-echo "Open this note"
+           `(face ,face mouse-face highlight
+                  help-echo ,(format "クリックで開く: %s (ドラッグでマップ移動)" node)
                   obsidian-node ,node keymap ,obsidian-graph-mode-map)
            visible)
           (aset canvas y
@@ -526,6 +748,9 @@ CURRENT names the active node."
 CURRENT names the active node."
   (obsidian--canvas-as-string
    (obsidian--render-canvas nodes edges positions width height current)))
+
+
+;;; Marquee animation
 
 (defun obsidian--graph-stop-marquee ()
   "Stop the graph label marquee timer in the current buffer."
@@ -579,14 +804,13 @@ CURRENT names the active node."
            #'obsidian--graph-marquee-tick
            (current-buffer)))))
 
-;;; Camera and viewport
+
+;;; Camera, viewport, panning, and zoom
 
 (defun obsidian--graph-viewport-size ()
   "Return usable graph viewport size."
   (let ((window (get-buffer-window (current-buffer))))
-    ;; Reserve one physical column.  On terminal frames a line occupying the
-    ;; exact text width can be treated as continued; subsequent redisplay then
-    ;; shifts graph rows and may paint across the adjacent pane.
+    ;; Reserve one physical column so terminal frames never wrap exact-width rows.
     (cons (max 1 (1- (if window
                          (window-body-width window)
                        obsidian-graph-width)))
@@ -606,18 +830,13 @@ CURRENT names the active node."
   "Render only the camera rectangle of the virtual canvas."
   (when obsidian--graph-canvas
     (obsidian--graph-clamp-camera)
-    (let* ((inhibit-read-only t) (view (obsidian--graph-viewport-size))
-           (scope (file-relative-name obsidian--current-scope obsidian--vault)))
+    (let* ((inhibit-read-only t)
+           (view (obsidian--graph-viewport-size))
+           (focus-hint (if obsidian--graph-focused-node
+                           (format "  選択: ◈ %s (RETで開く)"
+                                   obsidian--graph-focused-node)
+                         "  ドラッグ:移動  ホイール:拡縮  TAB:巡回")))
       (erase-buffer)
-      (insert
-       (propertize
-        (truncate-string-to-width
-         (format "Graph: %s  view(%d,%d)  arrows: move  0: center"
-                 (if (equal scope "./") "vault root" scope)
-                 obsidian--graph-camera-x obsidian--graph-camera-y)
-         (car view) nil nil "")
-        'face 'bold)
-       "\n")
       (dotimes (row (cdr view))
         (let ((source-row (+ obsidian--graph-camera-y row)))
           (if (>= source-row obsidian--graph-canvas-height)
@@ -626,20 +845,31 @@ CURRENT names the active node."
               (insert (obsidian--display-column-slice
                        line obsidian--graph-camera-x (car view))
                       "\n")))))
+      (insert (propertize
+               (truncate-string-to-width focus-hint (car view) nil nil "")
+               'face 'obsidian-header-muted))
       (goto-char (point-min))
       (set-buffer-modified-p nil))))
 
+(defun obsidian--graph-center-on-position (pos)
+  "Center the graph camera on canvas coordinate POS `(X . Y)'."
+  (when pos
+    (let ((view (obsidian--graph-viewport-size)))
+      (setq obsidian--graph-camera-x (- (car pos) (/ (car view) 2))
+            obsidian--graph-camera-y (- (cdr pos) (/ (cdr view) 2)))
+      (obsidian--graph-clamp-camera)
+      (obsidian--graph-draw-view))))
+
 (defun obsidian--graph-center-camera ()
-  "Center the camera on the active node or canvas center."
+  "Center the camera on the active/focused node or canvas center."
   (interactive)
-  (let* ((view (obsidian--graph-viewport-size))
-         (target (or obsidian--graph-current-position
-                     (cons (/ obsidian--graph-canvas-width 2)
-                           (/ obsidian--graph-canvas-height 2)))))
-    (setq obsidian--graph-camera-x (- (car target) (/ (car view) 2))
-          obsidian--graph-camera-y (- (cdr target) (/ (cdr view) 2)))
-    (obsidian--graph-clamp-camera)
-    (obsidian--graph-draw-view)))
+  (let ((target (or (and obsidian--graph-focused-node
+                         (cdr (assoc obsidian--graph-focused-node
+                                     obsidian--graph-node-positions)))
+                    obsidian--graph-current-position
+                    (cons (/ obsidian--graph-canvas-width 2)
+                          (/ obsidian--graph-canvas-height 2)))))
+    (obsidian--graph-center-on-position target)))
 
 (defun obsidian--graph-pan (dx dy)
   "Move the map camera by DX,DY, without moving a text cursor."
@@ -661,36 +891,122 @@ CURRENT names the active node."
   "Pan the graph camera right."
   (interactive) (obsidian--graph-pan 4 0))
 
-;;; Refresh and interaction
+(defun obsidian-graph-zoom-in ()
+  "Zoom into the graph by widening node spacing."
+  (interactive)
+  (when-let ((buf (get-buffer obsidian-graph-buffer-name)))
+    (with-current-buffer buf
+      (setq obsidian--graph-zoom (min 2.2 (+ (or obsidian--graph-zoom 1.0) 0.2)))
+      (obsidian-refresh-graph)
+      (message "グラフ表示倍率: %d%%" (round (* 100 obsidian--graph-zoom))))))
 
-(defun obsidian-refresh-graph ()
-  "Rebuild a spacious virtual canvas and center the camera."
+(defun obsidian-graph-zoom-out ()
+  "Zoom out of the graph by compacting node spacing."
+  (interactive)
+  (when-let ((buf (get-buffer obsidian-graph-buffer-name)))
+    (with-current-buffer buf
+      (setq obsidian--graph-zoom (max 0.6 (- (or obsidian--graph-zoom 1.0) 0.2)))
+      (obsidian-refresh-graph)
+      (message "グラフ表示倍率: %d%%" (round (* 100 obsidian--graph-zoom))))))
+
+(defun obsidian-graph-toggle-style ()
+  "Toggle graph edges between rounded+heavy box-drawing and Braille patterns."
+  (interactive)
+  (setq obsidian-graph-edge-style
+        (if (eq obsidian-graph-edge-style 'braille) 'box 'braille))
+  (obsidian-refresh-graph)
+  (force-mode-line-update t)
+  (message "グラフ線スタイル: %s"
+           (if (eq obsidian-graph-edge-style 'braille)
+               "点字パターン高精細モード (⠀〜⣿)"
+             "角丸＋太線ハイライト罫線モード (╭╮ ━┃)")))
+
+(defun obsidian-graph-cycle-scope ()
+  "Cycle graph scope: `auto' -> `local' (2-hop) -> `folder' -> `global'."
+  (interactive)
+  (setq obsidian-graph-scope-mode
+        (pcase obsidian-graph-scope-mode
+          ('auto 'local)
+          ('local 'folder)
+          ('folder 'global)
+          (_ 'auto)))
+  (obsidian-refresh-graph)
+  (force-mode-line-update t)
+  (message "グラフ表示範囲: %s" (obsidian--graph-scope-label)))
+
+
+;;; Keyboard node focus cycling (`TAB' / `S-TAB')
+
+(defun obsidian--graph-cycle-focus (step)
+  "Advance `obsidian--graph-focused-node' by STEP along ordered graph nodes."
+  (when-let ((buf (get-buffer obsidian-graph-buffer-name)))
+    (with-current-buffer buf
+      (when obsidian--graph-ordered-nodes
+        (let* ((nodes obsidian--graph-ordered-nodes)
+               (len (length nodes))
+               (cur-idx (and obsidian--graph-focused-node
+                             (cl-position obsidian--graph-focused-node
+                                          nodes :test #'equal)))
+               (next-idx (if cur-idx
+                             (mod (+ cur-idx step) len)
+                           0))
+               (next-node (nth next-idx nodes)))
+          (setq obsidian--graph-focused-node next-node)
+          (obsidian-refresh-graph t)
+          (obsidian--graph-center-on-position
+           (cdr (assoc next-node obsidian--graph-node-positions))))))))
+
+(defun obsidian-graph-next-node ()
+  "Highlight and center the next connected node in the graph."
+  (interactive)
+  (obsidian--graph-cycle-focus 1))
+
+(defun obsidian-graph-previous-node ()
+  "Highlight and center the previous node in the graph."
+  (interactive)
+  (obsidian--graph-cycle-focus -1))
+
+
+;;; Refresh and mouse/keyboard interaction
+
+(defun obsidian-refresh-graph (&optional keep-focus)
+  "Rebuild the virtual graph canvas and center the camera.
+When KEEP-FOCUS is nil, clear any temporary `TAB' focus if a note is open."
   (interactive)
   (when-let ((buffer (get-buffer obsidian-graph-buffer-name)))
     (with-current-buffer buffer
-      (let* ((files (seq-take (obsidian--notes-in-current-scope)
+      (let* ((files (seq-take (obsidian--graph-effective-files)
                               obsidian-graph-max-nodes))
              (nodes (delete-dups (mapcar #'file-name-base files)))
              (edges (obsidian--build-edges files))
              (view (obsidian--graph-viewport-size))
-             ;; Roughly two viewports: enough whitespace to remove crowding,
-             ;; while keeping a useful neighborhood visible on first open.
-             (compact (<= (length nodes) 12))
-             ;; Normal vault folders fit completely in the visible panel.
-             ;; Only genuinely large graphs receive a pannable canvas.
+             (zoom (or obsidian--graph-zoom 1.0))
+             (compact (and (<= (length nodes) 12) (<= zoom 1.05)))
              (width (if compact
                         (car view)
-                      (max (car view) (* 7 (length nodes)))))
+                      (max (car view)
+                           (round (* zoom 7 (max 4 (length nodes)))))))
              (height (if compact
                          (cdr view)
-                       (max (cdr view) (* 3 (length nodes)))))
-             ;; A wider panel should reveal whitespace, not stretch every
-             ;; connection.  Small graphs stay in a compact central cluster.
+                       (max (cdr view)
+                            (round (* zoom 3 (max 4 (length nodes)))))))
              (layout-width (if compact (min width 48) width))
              (layout-height (if compact (min height 22) height))
              (current (and obsidian--current-file
                            (file-name-base obsidian--current-file))))
         (obsidian--graph-stop-marquee)
+        (unless (and keep-focus
+                     (member obsidian--graph-focused-node nodes))
+          (setq obsidian--graph-focused-node nil))
+        ;; Order TAB focus so direct neighbors of CURRENT come first.
+        (let ((neighbors (and current (obsidian--connected-nodes current edges))))
+          (setq obsidian--graph-ordered-nodes
+                (append neighbors
+                        (cl-remove-if (lambda (n)
+                                        (or (equal n current)
+                                            (member n neighbors)))
+                                      nodes)
+                        (and (member current nodes) (list current)))))
         (setq obsidian--graph-points nil
               obsidian--graph-marquee-step 0)
         (if nodes
@@ -700,39 +1016,87 @@ CURRENT names the active node."
                    (positions
                     (obsidian--center-positions
                      raw-positions layout-width layout-height width height)))
-              (setq obsidian--graph-canvas-width width
+              (setq obsidian--graph-node-positions positions
+                    obsidian--graph-canvas-width width
                     obsidian--graph-canvas-height height
                     obsidian--graph-current-position (cdr (assoc current positions))
                     obsidian--graph-canvas
                     (obsidian--render-canvas nodes edges positions
                                              width height current))
-              (obsidian--graph-center-camera)
+              (unless keep-focus
+                (obsidian--graph-center-camera))
+              (when keep-focus
+                (obsidian--graph-draw-view))
               (obsidian--graph-start-marquee nodes))
-          (setq obsidian--graph-canvas-width (car view)
+          (setq obsidian--graph-node-positions nil
+                obsidian--graph-ordered-nodes nil
+                obsidian--graph-canvas-width (car view)
                 obsidian--graph-canvas-height (cdr view)
                 obsidian--graph-current-position nil
                 obsidian--graph-camera-x 0 obsidian--graph-camera-y 0
                 obsidian--graph-canvas
-                (vconcat (list "  No notes in this scope. Select a folder on the left.")
+                (vconcat (list "  この範囲にノートがありません。上部の [範囲] または [+新規] をクリックしてください。")
                          (make-list (max 0 (1- (cdr view))) "")))
           (obsidian--graph-draw-view))))))
 
 (defun obsidian--graph-node-at (position)
   "Return graph node at or immediately before POSITION."
-  (or (get-text-property position 'obsidian-node)
-      (and (> position (point-min))
-           (get-text-property (1- position) 'obsidian-node))))
+  (when (and (integer-or-marker-p position)
+             (>= position (point-min))
+             (<= position (point-max)))
+    (or (and (< position (point-max))
+             (get-text-property position 'obsidian-node))
+        (and (> position (point-min))
+             (get-text-property (1- position) 'obsidian-node)))))
 
 (defun obsidian--graph-open-node (node)
   "Open NODE in the central editor."
   (if-let ((file (and node (obsidian--find-note node))))
       (obsidian--open-note file)
-    (user-error "No note at this position")))
+    (user-error "ノートが選択されていません（TABキーまたはクリックで選択）")))
 
 (defun obsidian--graph-open-at-point ()
-  "Open the graph node at point."
+  "Open the graph node at point, or the `TAB'-focused / active node."
   (interactive)
-  (obsidian--graph-open-node (obsidian--graph-node-at (point))))
+  (obsidian--graph-open-node
+   (or (obsidian--graph-node-at (point))
+       obsidian--graph-focused-node
+       (car obsidian--graph-ordered-nodes))))
+
+(defun obsidian--graph-mouse-down (event)
+  "Grab-pan the graph viewport when dragging with mouse-1, or open clicked node."
+  (interactive "e")
+  (let* ((start-posn (event-start event))
+         (win (posn-window start-posn))
+         (start-pt (posn-point start-posn))
+         (start-cr (posn-col-row start-posn))
+         (last-col (car-safe start-cr))
+         (last-row (cdr-safe start-cr))
+         (dragged nil))
+    (when (and (window-live-p win) (null (posn-area start-posn)))
+      (select-window win)
+      (track-mouse
+        (let (ev)
+          (while (progn
+                   (setq ev (read-event))
+                   (mouse-movement-p ev))
+            (let* ((posn (event-end ev))
+                   (cr (and posn
+                            (eq (posn-window posn) win)
+                            (posn-col-row posn))))
+              (when (and cr (car cr) (cdr cr) last-col last-row)
+                (let ((dx (- (car cr) last-col))
+                      (dy (- (cdr cr) last-row)))
+                  (when (or (/= dx 0) (/= dy 0))
+                    (setq dragged t
+                          last-col (car cr)
+                          last-row (cdr cr))
+                    (obsidian--graph-pan (- dx) (- dy)))))))))
+      (when (and (not dragged) (integer-or-marker-p start-pt))
+        (with-current-buffer obsidian-graph-buffer-name
+          (when-let ((node (obsidian--graph-node-at start-pt)))
+            (setq obsidian--graph-focused-node node)
+            (obsidian--graph-open-node node)))))))
 
 (defun obsidian--graph-mouse-open (event)
   "Open the graph node clicked in EVENT."
@@ -740,7 +1104,8 @@ CURRENT names the active node."
   (with-current-buffer obsidian-graph-buffer-name
     (let ((position (posn-point (event-end event))))
       (when (integer-or-marker-p position)
-        (obsidian--graph-open-node (obsidian--graph-node-at position))))))
+        (when-let ((node (obsidian--graph-node-at position)))
+          (obsidian--graph-open-node node))))))
 
 (defun obsidian--schedule-graph-update ()
   "Refresh the graph shortly, coalescing repeated requests."
